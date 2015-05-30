@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0
+VER=1.1
 ################################################################
 ##
 ## BACKUP SCRIPT for RSA Security Analytics 10.4.x
@@ -22,6 +22,8 @@ VER=1.0
 ################################################################
 # # Version History
 # 1.0	- Initial version
+# 1.1	+ Code refactoring around service start/stop
+#		* bug fixes
 #---------------------------------------------------------------
 # TO DO:
 # - remote backup files 
@@ -36,7 +38,7 @@ VER=1.0
 BACKUPPATH=/root/sabackups				# The backup directory
 LOG=sa_backup.log						# the backup log file
 LOG_MAX_DIM=10000000 					# Max size of log file in bytes - 10MB 
-RETENTION_DAYS=5						# Local backups retention 
+RETENTION_DAYS=1						# Local backups retention 
 RE_FULLBACKUP=0							# 0 - backup only RE configuration; 1 - full RE backup 
 
 # Remote backup
@@ -72,7 +74,8 @@ ESASERVER1=/opt/rsa/esa
 IM=/opt/rsa/im
 LOGCOL=/var/netwitness/logcollector
 RABBITMQ=/var/lib/rabbitmq
-  
+NWSERVICES=() 
+ 
 ####################################################################
 # Syslog a message
 ####################################################################
@@ -127,12 +130,11 @@ check_root(){
 ## Cleanup the Backup Staging Area
 ####################################################################
 function do_Cleanup {
-    find ${BACKUP} -maxdepth 1 -type d -mtime +$RETENTION_DAYS -exec rm -Rf {} \;
+    find ${BACKUP} -maxdepth 1 -type d -mtime +$RETENTION_DAYS -exec rm -Rf {} \; 2>&1 | tee -a $LOG;
     rm -f $PID_FILE
 	
 }
 trap do_Cleanup HUP INT QUIT TERM EXIT
-
 ####################################################################
 # Check if another instance is running
 ####################################################################
@@ -149,8 +151,6 @@ function check_isRun() {
      fi
     echo $$ > $PID_FILE
 }
-
-
 ####################################################################
 # Rotate log file based on dimension
 ####################################################################
@@ -163,9 +163,33 @@ function rotate_Logs() {
 	   fi
 	fi
 }
+####################################################################
+# Returns original service's status 
+# ARGUMENTS:
+# 1 - Service name
+# 2 - Service type (upstart|init)
+# 3 - Return variable (stop|start)
+# Returns 1 - service started; 0 - stopped  
+####################################################################
+function check_ServiceStatus() {
+	local _SERVICE=$1
+	local _SERVICE_TYPE=$2
+	local _RESULTVAR=$3
+	local _RETURNVAL=0
+	local __RESTART
+	[[ "$_SERVICE_TYPE" = "init" ]] && _RETURNVAL=$(service ${_SERVICE} status | grep -E "is running|running_applications" | wc -l);
+	[[ "$_SERVICE_TYPE" = "upstart" ]] && _RETURNVAL=$(status ${_SERVICE} | grep "start/running" | wc -l);
+	if [ $_RETURNVAL -eq 1 ]; then 
+		__RESTART="start"
+	else 
+		__RESTART="stop"
+	fi
+	eval $_RESULTVAR="'$__RESTART'"
+	return $_RETURNVAL 
+}
 
 ####################################################################
-# Determine components present (and service status - TO DO)
+# Determine components present on the box
 ####################################################################
 function what_to_backup() {
 	recipe[0]="backup_etc"
@@ -235,7 +259,6 @@ function backup_CoreAppliance() {
 	do
 		start "${i}" 2>&1 | tee -a $LOG
 	done
-
 }	
 ####################################################################
 # REPORTING ENGINE 
@@ -245,18 +268,14 @@ function backup_CoreAppliance() {
 function backup_RE {
 	writeLog "Backup of ${REPORTING}"
 	EXCL_FILES=''
-	RESTART=false
-	#Backup only last 4 DB archives. Creating an exclude parameter for old DB archives files   
-	for FILE in $(ls -1tr ${REPORTING}/archives | head -n -4)
+	local _RESTART
+	#Backup only last 2 DB archives. Creating an exclude parameter for old DB archives files   
+	for FILE in $(ls -1tr ${REPORTING}/archives | head -n -2)
 	  do
 		EXCL_FILES+=" --exclude=${REPORTING}/archives/${FILE}"
 	  done
-	RESTART=$(status rsasoc_re | awk '{print $2}') 
-	if [ "$RESTART" = "start/running," ]; then 
-		RESTART=true
-		writeLog "Stopping the Reporting Engine..."
-		stop rsasoc_re 2>&1 | tee -a $LOG
-	fi
+
+	check_ServiceStatus rsasoc_re upstart _RESTART || stop rsasoc_re 2>&1 | tee -a $LOG
 	  
 	if [ "$RE_FULLBACKUP" -eq 0 ]; then 
 		writeLog "Backing up Reporting Engine configuration files..."
@@ -278,29 +297,26 @@ function backup_RE {
 			syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive Reporting engine files ${REPORTING}."	
 		fi;
 	
-	if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting the Reporting Engine..."
-		start rsasoc_re 2>&1 | tee -a $LOG		
-	fi
+	$_RESTART rsasoc_re 2>&1 | tee -a $LOG
 }
+
 ####################################################
 ## SA SERVER and JETTY 
 # SASERVER1=/var/lib/netwitness/uax
 # JETTYSRV=/opt/rsa/jetty9/etc	
 ####################################################
 function backup_Jetty() {
+	local _RESTART
 	writeLog ""
 	writeLog "Backup of ${SASERVER1}"
-	writeLog "Stopping jetty server..."
-	stop jettysrv 2>&1 | tee -a $LOG
-	sleep 5
+	check_ServiceStatus jettysrv upstart _RESTART || stop jettysrv 2>&1  && sleep 5 | tee -a $LOG
 	EXCL_FILES=''
 	#Backup only last 2 H2 DB archives. Creating an exclude parameter for old H2 DB archives files   
 	for FILE in $(ls -1tr ${SASERVER1}/db/*.zip | head -n -2)
 	  do
-		EXCL_FILES+=" --exclude=${SASERVER1}/db/${FILE}"
+		EXCL_FILES+=" --exclude=${FILE}"
 	  done 
-	  
+
 	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-netwitness-uax.$timestamp.tar.gz ${SASERVER1}"		 
 	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-netwitness-uax.$timestamp.tar.gz ${SASERVER1} \
 		--exclude=${SASERVER1}/temp \
@@ -309,35 +325,30 @@ function backup_Jetty() {
 		--exclude=${SASERVER1}/yum \
 		--exclude=${SASERVER1}/logs/*_index \
 		--exclude=${SASERVER1}/content \
+		--exclude=${SASERVER1}/lib \
 		${EXCL_FILES} 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive SA server conf files ${SASERVER1}"	
-	writeLog "Starting jetty server"		
-	start jettysrv 2>&1 | tee -a $LOG
 
-# Backup Jetty key store
+	writeLog "Starting jetty server"		
+	$_RESTART jettysrv 2>&1 | tee -a $LOG
+	
+	# Backup Jetty key store
 	writeLog ""
 	writeLog "Backup of Jetty keystore"
 	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-jetty9-etc.$timestamp.tar.gz ${JETTYSRV}/keystore ${JETTYSRV}/jetty-ssl.xml"
 	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-jetty9-etc.$timestamp.tar.gz ${JETTYSRV}/keystore ${JETTYSRV}/jetty-ssl.xml 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive Jetty keystore files ${JETTYSRV}"	
-
 }
 	
 ####################################################
 ## MONGODB INSTANCE
 ####################################################
 function backup_Mongo() {
+	local _RESTART
 	writeLog "Backup of MongoDB."
-	RESTART=$(service tokumx status | grep "is running" | wc -l)
-	if [ $RESTART -eq 0 ]; then 
-		RESTART=false
-		# MongoDB must be running. 
-		writeLog "Mongodb (tokumx) is not running. Starting tokumx to dump the DB.."
-		service tokumx start 2>&1 | tee -a $LOG
-		sleep 10
-	fi
-
-	# if ESA server then temporarily disable auth to dump entire instance. Lazy approach.
+	# MongoDB must be running. 
+	check_ServiceStatus tokumx init _RESTART && service tokumx start 2>&1  && sleep 10 | tee -a $LOG
+	# Lazy solution. If ESA server then temporarily disable auth to dump entire instance. 
 	if [ -d /opt/rsa/esa ]; then 
 		sed -i "s/\(auth *= *\).*/\1false/" /etc/tokumx.conf 
 		service tokumx restart 2>&1 | tee -a $LOG
@@ -353,19 +364,18 @@ function backup_Mongo() {
 	#Unlock database writes
 	writeLog "Unlocking database writes"
 	mongo admin --eval "printjson(db.fsyncUnlock())" 2>&1 | tee -a $LOG
-	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz ${BACKUP}/$HOST-mongodb-dump.$timestamp"
-	tar -C ${BACKUP} --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz $HOST-mongodb-dump.$timestamp 2>&1 | tee -a $LOG
-		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive MongoDB dump."		
-	rm -Rf ${BACKUP}/$HOST-mongodb-dump.$timestamp
 
 	if [ -d /opt/rsa/esa ]; then 
 		sed -i "s/\(auth *= *\).*/\1true/" /etc/tokumx.conf 
 		service tokumx restart 2>&1 | tee -a $LOG
 	fi	
-	if [ "$RESTART" = false ]; then 
-		writeLog "Mongodb was not running befor backup. Stopping tokumx..."
-		service tokumx stop 2>&1 | tee -a $LOG
-	fi
+
+	service tokumx $_RESTART 2>&1 | tee -a $LOG
+	
+	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz ${BACKUP}/$HOST-mongodb-dump.$timestamp"
+	tar -C ${BACKUP} --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz $HOST-mongodb-dump.$timestamp 2>&1 | tee -a $LOG
+		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive MongoDB dump."		
+	rm -Rf ${BACKUP}/$HOST-mongodb-dump.$timestamp
 }	
 	
 ####################################################################
@@ -373,20 +383,11 @@ function backup_Mongo() {
 # ESASERVER1=/opt/rsa/esa
 ####################################################################
 function backup_ESA() {
+	local _RESTART
 	writeLog "Backup of ${ESASERVER1}"
-	RESTART=$(service rsa-esa status | grep "is running" | wc -l)
-	if [ $RESTART -eq 1 ]; then 
-		RESTART=true
-		writeLog "Stopping ESA server.."
-		service rsa-esa stop 2>&1 | tee -a $LOG
-	fi
+	check_ServiceStatus rsa-esa init _RESTART || service rsa-esa stop 2>&1 | tee -a $LOG
 
-	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 \ 		--exclude=${ESASERVER1}/lib \
-		--exclude=${ESASERVER1}/bin \
-		--exclude=${ESASERVER1}/geoip \
-		--exclude=${ESASERVER1}/db \
-		--exclude=${ESASERVER1}/temp \
-		--exclude=${ESASERVER1}/client"
+	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 --exclude=${ESASERVER1}/lib --exclude=${ESASERVER1}/bin 	--exclude=${ESASERVER1}/geoip --exclude=${ESASERVER1}/db --exclude=${ESASERVER1}/temp --exclude=${ESASERVER1}/client"
 	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 \
 		--exclude=${ESASERVER1}/lib \
 		--exclude=${ESASERVER1}/bin \
@@ -394,12 +395,9 @@ function backup_ESA() {
 		--exclude=${ESASERVER1}/db \
 		--exclude=${ESASERVER1}/temp \
 		--exclude=${ESASERVER1}/client 2>&1 | tee -a $LOG
-		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive ESA files ${ESASERVER1}."	
-	if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting the ESA server....."
-		service rsa-esa start 2>&1 | tee -a $LOG		
-	fi	
-
+		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive ESA files ${ESASERVER1}."
+		
+	service rsa-esa $_RESTART 2>&1 | tee -a $LOG		
 } 
 
 ####################################################################
@@ -407,30 +405,19 @@ function backup_ESA() {
 # IM=/opt/rsa/im
 ####################################################################
 function backup_IM() {
+	local _RESTART
 	writeLog "Backup of ${IM}"
-	RESTART=$(service rsa-im status | grep "is running" | wc -l)
-	if [ $RESTART -eq 1 ]; then 
-		RESTART=true
-		writeLog "Stopping RSA IM server.."
-		service rsa-im stop 2>&1 | tee -a $LOG
-	fi
+	check_ServiceStatus rsa-im init _RESTART || service rsa-im stop 2>&1 | tee -a $LOG	
 
-	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} \
-		--exclude=${IM}/lib \
-		--exclude=${IM}/bin \
-		--exclude=${IM}/scripts \
-		--exclude=${IM}/d 2>&1 | tee -a $LOG"
+	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} --exclude=${IM}/lib --exclude=${IM}/bin --exclude=${IM}/scripts --exclude=${IM}/db"
 	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} \
 		--exclude=${IM}/lib \
 		--exclude=${IM}/bin \
 		--exclude=${IM}/scripts \
 		--exclude=${IM}/db  2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive RSA IM files ${IM}."	
-	if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting the IM server....."
-		service rsa-im start 2>&1 | tee -a $LOG		
-	fi	
 
+		service rsa-im $_RESTART 2>&1 | tee -a $LOG		
 } 
  
 ####################################################################
@@ -438,16 +425,12 @@ function backup_IM() {
 # RSAMALWARE=/var/lib/netwitness/rsamalware
 ####################################################################
 function backup_Malware() {
+	local _RESTART
 	writeLog ""
 	writeLog "Backup of ${RSAMALWARE}"
-	RESTART=$(status rsaMalwareDevice | awk '{print $2}') 
-	if [ "$RESTART" = "start/running," ]; then 
-		RESTART=true
-		writeLog "Stopping the Malware service..."
-		stop rsaMalwareDevice 2>&1 | tee -a $LOG
-	fi
+	check_ServiceStatus rsaMalwareDevice upstart _RESTART || stop rsaMalwareDevice 2>&1 && sleep 5 | tee -a $LOG	
 	
-	writeLog "tar  -zvcf ${BACKUP}/$HOST-var-lib-netwitness-rsamalware.$timestamp.tar.gz $RSAMALWARE"
+	writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-netwitness-rsamalware.$timestamp.tar.gz $RSAMALWARE"
 	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-netwitness-rsamalware.$timestamp.tar.gz $RSAMALWARE \
 		--exclude=${RSAMALWARE}/jetty/javadoc \
 		--exclude=${RSAMALWARE}/jetty/lib \
@@ -464,10 +447,8 @@ function backup_Malware() {
 		--exclude=${RSAMALWARE}/spectrum/index \
 		--exclude=${RSAMALWARE}/saw 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive the RSA Malware files ${RSAMALWARE}."	
-	if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting the Malware service..."
-		start rsaMalwareDevice 2>&1 | tee -a $LOG	
-	fi
+
+		$_RESTART rsaMalwareDevice 2>&1 | tee -a $LOG	
 }
   
 ####################################################################
@@ -475,24 +456,17 @@ function backup_Malware() {
 # LOGCOL=/var/netwitness/logcollector
 ####################################################################  
 function backup_LC() {
+	local _RESTART
 	writeLog
 	writeLog "Backup of ${LOGCOL}"
-	RESTART=$(status nwlogcollector | awk '{print $2}') 
-	if [ "$RESTART" = "start/running," ]; then 
-		RESTART=true
-		writeLog "Stopping the Log Collector..."
-		stop nwlogcollector 2>&1 | tee -a $LOG
-	fi
+	check_ServiceStatus nwlogcollector upstart _RESTART || stop nwlogcollector 2>&1  && sleep 5	| tee -a $LOG
 
 	writeLog "tar --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-netwitness-logcollector.$timestamp.tar.gz $LOGCOL"
 	
     tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-netwitness-logcollector.$timestamp.tar.gz $LOGCOL --exclude=$LOGCOL/metadb/core.* 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive the Log Collector files ${LOGCOL}."	
 
-		if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting the Log Collector..."
-		start nwlogcollector 2>&1 | tee -a $LOG	
-	fi	
+	$_RESTART nwlogcollector 2>&1 | tee -a $LOG	
 }
 
 ####################################################################
@@ -500,22 +474,15 @@ function backup_LC() {
 # WHC=/var/netwitness/warehouseconnector
 ####################################################################
 function backup_WHC() {  
+	local _RESTART
 	WriteLog
 	WriteLog "Backup of ${WHC}"
-	RESTART=$(status nwlogcollector | awk '{print $2}') 
-	if [ "$RESTART" = "start/running," ]; then 
-		RESTART=true
-		writeLog "Stopping the Warehouse connector..."
-		stop nwwarehouseconnector 2>&1 | tee -a $LOG
-	fi
+	check_ServiceStatus nwwarehouseconnector upstart _RESTART || stop nwwarehouseconnector 2>&1 | tee -a $LOG	
 
 	WriteLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-netwitness-warehouseconnector.$timestamp.tar.gz $WHC"
     tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-netwitness-warehouseconnector.$timestamp.tar.gz $WHC 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive the Warehouse connector files ${WHC}."	
-	if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting the Warehouse connector..."
-		start nwwarehouseconnector 2>&1 | tee -a $LOG	
-	fi	
+	$_RESTART nwwarehouseconnector 2>&1 | tee -a $LOG	
 }  
 
 ####################################################################
@@ -542,26 +509,17 @@ function backup_etc() {
 # PUPPET2=/etc/puppet
 ####################################################################
 function backup_Puppet() {	
-	WriteLog
-	WriteLog "Backup of Puppet"
+	local _RESTART
+	writeLog
+	writeLog "Backup of Puppet"
 	if [ -d "${PUPPET1}" ]; then
-#		service puppet stop 2>&1 | tee -a $LOG
-		RESTART=$(service puppetmaster status | grep "is running" | wc -l)
-		if [ $RESTART -eq 1 ]; then 
-			RESTART=true
-			writeLog "Stopping Puppet Master..."
-			service puppetmaster stop 2>&1 | tee -a $LOG
-		fi
-	
+		check_ServiceStatus puppetmaster init _RESTART || service puppetmaster stop 2>&1 | tee -a $LOG	
+
 		writeLog "tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz ${PUPPET1}/ssl ${PUPPET1}/node_id ${PUPPET2}/puppet.conf ${PUPPET2}/csr_attributes.yaml" 
 		tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz ${PUPPET1}/ssl ${PUPPET1}/node_id ${PUPPET2}/puppet.conf ${PUPPET2}/csr_attributes.yaml 2>&1 | tee -a $LOG
 			syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive the Puppet conf files ${PUPPET1}."	
-		if [ "$RESTART" = "true" ]; then 
-			writeLog "Starting Puppet Master..."
-			service puppetmaster start 2>&1 | tee -a $LOG		
-		fi	
-#		service puppet start 2>&1 | tee -a $LOG
-		
+
+		service puppetmaster $_RESTART 2>&1 | tee -a $LOG		
 	fi;		
 }	
 
@@ -570,14 +528,9 @@ function backup_Puppet() {
 # RABBITMQ=/var/lib/rabbitmq
 ####################################################################
 function backup_RabbitMQ() {
+	local _RESTART
 	writeLog "Backup of RabbitMQ DB - ${RABBITMQ}" 
-	RESTART=$(service rabbitmq-server status | grep "is running" | wc -l)
-	if [ $RESTART -eq 1 ]; then 
-		RESTART=true
-		writeLog "Stopping RabbitMQ server.."
-		service rabbitmq-server stop 2>&1 | tee -a $LOG
-		sleep 10
-	fi
+	check_ServiceStatus rabbitmq-server init _RESTART || service rabbitmq-server stop 2>&1 && sleep 10 | tee -a $LOG	
 
 	writeLog "tar -czvf ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ}" 
 	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ} 2>&1 | tee -a $LOG
@@ -586,11 +539,7 @@ function backup_RabbitMQ() {
 	writeLog "Backup of RabbitMQ Configuration - /etc/netwitness/ng/rabbitmq -> /etc/rabbitmq" 
 #	tar -C / --atime-preserve --recursion $TARSWITCHES ${BACKUP}/$HOST-etc-rabbitmq.$timestamp.tar.gz /etc/netwitness/ng/rabbitmq 2>&1 | tee -a $LOG
 
-	if [ "$RESTART" = "true" ]; then 
-		writeLog "Starting RabbitMQ..."
-		service rabbitmq-server start 2>&1 | tee -a $LOG	
-	fi	
-
+	service rabbitmq-server $_RESTART 2>&1 | tee -a $LOG	
 }
 
 do_Backup() {
@@ -623,9 +572,7 @@ main(){
 	do_Cleanup
 }
 
-
 if [ x"${0}" != x"-bash" ]; then 
-	#cd $(dirname $0)
 	main
 	exit 0 
 fi
