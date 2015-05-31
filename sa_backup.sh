@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.1
+VER=1.0.1
 ################################################################
 ##
 ## BACKUP SCRIPT for RSA Security Analytics 10.4.x
@@ -21,9 +21,9 @@ VER=1.1
 ##
 ################################################################
 # # Version History
-# 1.0	- Initial version
-# 1.1	+ Code refactoring around service start/stop
-#		* bug fixes
+# 1.0.0		- Initial version
+# 1.0.1		+ Code refactoring around service start/stop
+#			* Bug fixes
 #---------------------------------------------------------------
 # TO DO:
 # - remote backup files 
