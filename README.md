@@ -4,8 +4,14 @@ RSA Securiy Analytics Backup tool
 
 Author : Maxim Siyazov 
 
-_sa_backup_ is a tool to take a backup of all Security Analytics components available on an appliance. 
+sa_backup is a tool to take a backup of all Security Analytics components available on an appliance. 
 Tested with versions 10.3 and 10.4.   
+
+Because in 10.4 some configurations are managed by puppet the sa_backup does not save those files, such as rabbitmq, collectd, tokumx, mcollective and puppet provisioned ssl files.
+
+So far the tool does not do:
+- remote backup - on its way.
+- backup of SMS server - checking if we have to back it up actually.
 
 ### Features
 
