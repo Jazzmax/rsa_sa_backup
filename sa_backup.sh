@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.2
+VER=1.0.3
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.4
@@ -28,6 +28,7 @@ VER=1.0.2
 #			+ Improved RabbitMQ configuration backup
 #			+ Added support of 10.3
 # 			+ Added PestgreSQL backup for 10.3
+# 1.0.3		* Fixed SA version check
 #----------------------------------------------------------------------
 # TO DO:
 # - Remote backup files 
@@ -171,17 +172,19 @@ function rotate_Logs() {
 # Check if the SA version is 10.3 or higher 
 ####################################################################
 check_SAVersion() {
+	SA_APP_VER_TEMP=`mktemp`
 	# Get the (apparent) installed SA version
 	SA_APP_TYPE_TEMP=$(rpm -qa --qf '%{NAME}\n' | grep -E '^(nw|jetty|rsa-[a-z,A-Z]*|rsa[m,M]|re-server)' | grep -Ev 'rsa-sa-gpg-pubkeys')
 	for SA_PKG_NAME in ${SA_APP_TYPE_TEMP} ; do
-		SA_APP_TYPE_TEMP=$(rpm -q "${SA_PKG_NAME}" --qf '%{VERSION}\n') 
+		rpm -q "${SA_PKG_NAME}" --qf '%{VERSION}\n' 2> /dev/null >> "${SA_APP_VER_TEMP}"
 	done
-	SA_RELEASE_VER=$(echo ${SA_APP_TYPE_TEMP} | grep '^10\.' | sort -Vr | head -n 1)
+
+	SA_RELEASE_VER=$(cat ${SA_APP_VER_TEMP} | grep '^10\.' | sort -Vr | head -n 1)
+	rm -f "${SA_APP_VER_TEMP}"
 	# Sanity check to make sure version string looks like a version number
 	if [ -z "${SA_RELEASE_VER}" ] ; then
 	   exitOnError 1 "Could not determine appliance type from installed packages. Is this a Security Analytics\nappliance? This tool does not function on NetWitness appliances.\nPlease examine your installed packages.\n"
 	fi
-	
 	OIFS=$IFS
 	IFS='.'
 	SA_VER_ARRAY=($SA_RELEASE_VER)
