@@ -66,6 +66,18 @@ This script must be run as "root" user.
 
 ### Version history
 
+1.0.4
+        + Added RSA SMS configuration backup
+        * Fixed pupetmaster backup (added entire /etc/puppet)
+        + tarball all archives in a single file
+        + Added mcollective configuration backup
+        * Now taking ifcfg-*[0-9] instead of ifcfg-eth*
+        + Dsabling HWADDR parameter in network configuration scripts before archiving 
+        * Added support for 10.5
+
+1.0.3
+       * Fixed SA version check
+		
 1.0.2		
 		* Fixed removing old archives
 		+ SA version check (based on Joshua Newton code)
