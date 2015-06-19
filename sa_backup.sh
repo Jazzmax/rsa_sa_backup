@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.4
+VER=1.0.5
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.4
@@ -36,6 +36,7 @@ VER=1.0.4
 #           * Now taking ifcfg-*[0-9] instead of ifcfg-eth*
 #           + Disabling HWADDR parameter in network configuration scripts before archiving 
 #           * Added support for 10.5
+# 1.0.5		* Bug fixes: mcollective backup; single tar creation and cleanup.
 #           
 #----------------------------------------------------------------------
 # TO DO:
@@ -56,11 +57,11 @@ RETENTION_DAYS=1						# Local backups retention
 RE_FULLBACKUP=0							# 0 - backup only RE configuration; 
 										# 1 - full RE backup 
 
-# Remote NAS 
-SSH_HOST=192.168.12.102
-SSH_USERNAME=backup
-REMOTE_DIR=/home/backup/ss_backups
-SSH_IDENTITY_FILENAME=/root/
+# Remote NAS - NOT IMPLEMENTED 
+#SSH_HOST=192.168.12.102
+#SSH_USERNAME=backup
+#REMOTE_DIR=/home/backup/ss_backups
+#SSH_IDENTITY_FILENAME=/root/
 
 # Nothing to change below this line
 #===============================================================
@@ -88,6 +89,7 @@ SASERVER1=/var/lib/netwitness/uax
 JETTYSRV=/opt/rsa/jetty9/etc
 PUPPET1=/var/lib/puppet
 PUPPET2=/etc/puppet
+MCO=/etc/mcollective
 RSAMALWARE=/var/lib/netwitness/rsamalware
 ESASERVER1=/opt/rsa/esa
 IM=/opt/rsa/im
@@ -604,13 +606,13 @@ function backup_MCO() {
 	local _RESTART
 	writeLog "============================================================="
 	writeLog "Backup of mcollective"
-	check_ServiceStatus mcollective upstart _RESTART || stop mcollective 2>&1 | tee -a $LOG	
+	check_ServiceStatus mcollective init _RESTART || service mcollective stop 2>&1 | tee -a $LOG	
 
 	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-mcollective.$timestamp.tar.gz ${MCO}/ssl ${MCO}/client.cfg ${MCO}/server.cfg" 
 	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-mcollective.$timestamp.tar.gz ${MCO}/ssl ${MCO}/*.cfg 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "Failed to archive the mcollective conf files ${MCO}."	
 
-	$_RESTART mcollective  2>&1 | tee -a $LOG		
+	service mcollective $_RESTART 2>&1 | tee -a $LOG		
 
 }
 
@@ -687,11 +689,20 @@ function backup_PostgreSQL() {
 
 # create a single tarball
 create_tarball(){
+	local _RETURNVAL
 	writeLog "============================================================="
 	writeLog "Creating tarball ${HOST}-${timestamp}.tar"
 	tar -C ${BACKUPPATH} -cvf ${BACKUPPATH}/${HOST}-${timestamp}.tar --label="The backup of Security Analytics appliance ${SAMAJOR}.${SAMINOR} - ${HOST} taken on ${timestamp}." ${HOST}-${timestamp} 2>&1 | tee -a $LOG	
-	syslogOnError ${PIPESTATUS[0]} "SA backup failed to tarball the backup files."
-	return $?
+	_RETURNVAL=${PIPESTATUS[0]}
+	syslogOnError ${_RETURNVAL} "SA backup failed to tarball the backup files."
+	if [ ${_RETURNVAL} = 0 ];  then 
+		writeLog "The backup archive ${BACKUPPATH}/${HOST}-${timestamp}.tar is created"
+		#tar -tf ${BACKUPPATH}/${HOST}-${timestamp}.tar 2>&1 | tee -a $LOG
+		writeLog "" 
+		rm -fR ${BACKUP}
+	fi
+
+	return ${_RETURNVAL}
 }
 
 function copy_RemoteSCP()
@@ -732,11 +743,7 @@ do_Backup() {
 		writeLog "Starting Puppet agent."
 		service puppet start 2>&1 | tee -a $LOG
 	fi	
-	
-	writeLog "END $HOST BACKUP"
-	writeLog "The backup archive ${BACKUPPATH}/${HOST}-${timestamp}.tar is created containing:"
-	tar -tf ${BACKUPPATH}/${HOST}-${timestamp}.tar 2>&1 | tee -a $LOG
-	writeLog ""
+
 }
 
 main(){
@@ -755,6 +762,7 @@ main(){
 	#copy_RemoteSCP 
 
 	do_Cleanup
+	writeLog "END $HOST BACKUP"
 }
 
 if [ x"${0}" != x"-bash" ]; then 

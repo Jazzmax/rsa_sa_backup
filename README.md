@@ -4,35 +4,36 @@ RSA Securiy Analytics Backup tool
 
 Author : Maxim Siyazov 
 
-sa_backup is a tool to take a backup of all Security Analytics components available on an appliance. 
-Tested with versions 10.3 and 10.4.   
+sa_backup is a tool to take a backup of configurations of all Security Analytics components available on the appliance 
+Tested with versions 10.3, 10.4.   
 
 Because in 10.4 some configurations are managed by puppet the sa_backup does not save those files, such as rabbitmq, collectd, tokumx, mcollective and puppet provisioned ssl files.
 
-So far the tool does not do:
-- remote backup - on its way.
-- backup of SMS server - checking if we have to back it up actually.
+So far the tool does NOT do:
+- Remote backup - on its way.
+- Backup of a license server (fneserver).
 
 ### Features
 
 * The following components are backed up:
   - OS configuration files:
-    - /etc/sysconfig/network-scripts/ifcfg-eth* 
+    - /etc/sysconfig/network-scripts/ifcfg-*[0-9] - HWADDR is disabled
     - /etc/sysconfig/network
     - /etc/hosts
     - /etc/resolv.conf
     - /etc/ntp.conf
     - /etc/fstab - renamed to fstab.{hostname} to prevent overwriting the original fstab on restore
     - /etc/krb5.conf
-  - Puppet configuration (ssl files, node_id, puppet.conf, csr_attributes.yaml)
+  - Puppet configuration (puppetmaster, puppet client, ssl files, node_id, puppet.conf, csr_attributes.yaml, mcollective configuration)
   - Core Appliance Services configuration (/etc/netwitness/ng)
   - SA server configuration (/var/lib/netwitness/uax, jetty keystore, jetty-ssl.xml)
   - Reporting Engine (configuration or full backup (optional))
   - RabbitMQ server (mnesia database, configuration for 10.3)
-  - MongoDB (entire dump of the mongodb instance)
+  - MongoDB (entire dump of the mongodb instance of SA or ESA servers)
   - PostgreSQL database (10.3)
   - Malware Analysis 
   - ESA server 
+  - System Management Service (SMS)
   - Incident Management (IM) 
   - Log Collector (configuration and statDB)
   - Warehouse Connector
@@ -65,6 +66,9 @@ This script must be run as "root" user.
 5. Submit a pull request :D
 
 ### Version history
+
+1.0.5	
+        * Bug fixes: mcollective backup; single tar creation and cleanup.
 
 1.0.4
         + Added RSA SMS backup
