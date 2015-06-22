@@ -67,6 +67,13 @@ This script must be run as "root" user.
 
 ### Version history
 
+1.0.6   
+        * Optimized the core services backup. Saving files without stopping services 
+        * Consolidated into a single file SA server backup: uax, jetty and carlos keystores
+        * Fixed RSA SMS backup -  added db directory. 
+        * Changes around puppetmaster backup. Fuller backup.          
+        * Disabled a single tar creation as redundant 
+
 1.0.5	
         * Bug fixes: mcollective backup; single tar creation and cleanup.
 

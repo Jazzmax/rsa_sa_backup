@@ -1,8 +1,8 @@
 #!/bin/bash
-VER=1.0.5
+VER=1.0.6
 #######################################################################
 ##
-## BACKUP TOOL for RSA Security Analytics 10.3 - 10.4
+## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
 ##
 ## The script compresses configuration files of all available SA components
 ## into the backup directory specified in BACKUPPATH.
@@ -37,7 +37,11 @@ VER=1.0.5
 #           + Disabling HWADDR parameter in network configuration scripts before archiving 
 #           * Added support for 10.5
 # 1.0.5		* Bug fixes: mcollective backup; single tar creation and cleanup.
-#           
+# 1.0.6     * Optimized the core services backup. Saving files without stopping services 
+#           * Consolidated into a single file SA server backup: uax, jetty and carlos keystores
+#           * Fixed RSA SMS backup -  added db directory. 
+#           * Changes around puppetmaster backup. Fuller backup.          
+#           * Disabled a single tar creation as redundant 
 #----------------------------------------------------------------------
 # TO DO:
 # - Remote backup files 
@@ -235,9 +239,11 @@ function check_ServiceStatus() {
 	[[ "$_SERVICE_TYPE" = "init" ]] && _RETURNVAL=$(service ${_SERVICE} status | grep -E "is running|running_applications" | wc -l);
 	[[ "$_SERVICE_TYPE" = "upstart" ]] && _RETURNVAL=$(status ${_SERVICE} | grep "start/running" | wc -l);
 	if [ $_RETURNVAL -eq 1 ]; then 
+		writeLog "${_SERVICE} is running"
 		__RESTART="start"
 	else 
-		__RESTART="stop"
+		writeLog "${_SERVICE} is not running"
+		__RESTART="status"
 	fi
 	eval $_RESULTVAR="'$__RESTART'"
 	return $_RETURNVAL 
@@ -298,35 +304,20 @@ function what_to_backup() {
 function backup_CoreAppliance() {
 	local _RESTART
 	local _SERVICE_RESTART=()
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of Core appliance ${COREAPP}"
-	writeLog "Stopping SA Core services."
-	NWSERVICES=('nwconcentrator' 'nwarchiver' 'nwdecoder' 'nwbroker' 'nwlogcollector' 'nwlogdecoder' 'nwipdbextractor')
-	for i in "${NWSERVICES[@]}"
-	do
-		if ! check_ServiceStatus $i upstart _RESTART; then 
-			stop $i 2>&1 | tee -a $LOG
-			_SERVICE_RESTART+=("$i") 
-		fi
-	done
-	echo "${_SERVICE_RESTART[@]}"	
+	
 	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-netwitness.$timestamp.tar.gz ${COREAPP}"
-	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-netwitness.$timestamp.tar.gz ${COREAPP} --exclude=${COREAPP}/Geo*.dat --exclude=${COREAPP}/envision/etc/devices 2>&1 | tee -a $LOG
+	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-netwitness.$timestamp.tar.gz ${COREAPP} --exclude=${COREAPP}/Geo*.dat --exclude=${COREAPP}/envision/etc/devices --exclude=${COREAPP}/logcollection/content 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive Core appliance configuration files ${COREAPP}."
 		
-	writeLog "Starting SA Core services"	
-	for i in "${_SERVICE_RESTART[@]}"; do
-		start "${i}" 2>&1 | tee -a $LOG
-	done
-
 }	
 ####################################################################
 # REPORTING ENGINE 
 # REPORTING=/home/rsasoc/rsa/soc/reporting-engine
 ####################################################################
-# Reporting Engine 
 function backup_RE {
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of Reporting Engine ${REPORTING}"
 	local EXCL_FILES=''
 	local _RESTART
@@ -341,7 +332,7 @@ function backup_RE {
 	if [ "$RE_FULLBACKUP" -eq 0 ]; then 
 		writeLog "Backing up Reporting Engine configuration files..."
 		writeLog "tar --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-home-rsasoc-rsa-soc-reporting-engine.$timestamp.tar.gz ${REPORTING}"
-			tar --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-home-rsasoc-rsa-soc-reporting-engine.$timestamp.tar.gz ${REPORTING} \
+			tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-home-rsasoc-rsa-soc-reporting-engine.$timestamp.tar.gz ${REPORTING} \
 			--exclude=${REPORTING}/formattedReports \
 			--exclude=${REPORTING}/resultstore \
 			--exclude=${REPORTING}/livecharts \
@@ -354,7 +345,7 @@ function backup_RE {
 	else 
 		writeLog "Full RE backup enabled."
 		writeLog "tar --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-home-rsasoc-rsa-soc-reporting-engine.$timestamp.tar.gz ${REPORTING}"
-		tar --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-home-rsasoc-rsa-soc-reporting-engine.$timestamp.tar.gz ${REPORTING} --exclude=${REPORTING}/temp 2>&1 | tee -a $LOG
+		tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-home-rsasoc-rsa-soc-reporting-engine.$timestamp.tar.gz ${REPORTING} --exclude=${REPORTING}/temp 2>&1 | tee -a $LOG
 			syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive Reporting engine files ${REPORTING}."	
 		fi;
 
@@ -368,8 +359,8 @@ function backup_RE {
 ####################################################
 function backup_Jetty() {
 	local _RESTART
-	writeLog "============================================================="
-	writeLog "Backup of SA server ${SASERVER1}"
+	writeLog "==================================================================="
+	writeLog "Backup of SA server: ${SASERVER1}, ${JETTYSRV} and carlos keystore"
 	check_ServiceStatus jettysrv upstart _RESTART || stop jettysrv 2>&1  && sleep 5 | tee -a $LOG
 	local EXCL_FILES=""
 	#Backup only last 2 H2 DB archives. Creating an exclude parameter for old H2 DB archives files   
@@ -377,8 +368,10 @@ function backup_Jetty() {
 	  do
 		EXCL_FILES+=" --exclude=${i}"
 	  done 
-	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-netwitness-uax.$timestamp.tar.gz ${SASERVER1}"		 
+	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-netwitness-uax.$timestamp.tar.gz ${SASERVER1} ${JETTYSRV}/keystore ${JETTYSRV}/jetty-ssl.xml /opt/rsa/carlos/keystore"		 
 	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-netwitness-uax.$timestamp.tar.gz ${SASERVER1} \
+		${JETTYSRV}/keystore ${JETTYSRV}/jetty-ssl.xml \
+		/opt/rsa/carlos/keystore \
 		--exclude=${SASERVER1}/temp \
 		--exclude=${SASERVER1}/trustedStorage \
 		--exclude=${SASERVER1}/cache \
@@ -388,17 +381,10 @@ function backup_Jetty() {
 		--exclude=${SASERVER1}/lib \
 		--exclude=${SASERVER1}/scheduler \
 		${EXCL_FILES} 2>&1 | tee -a $LOG
-		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive SA server conf files ${SASERVER1}"	
+		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive SA server conf files"	
 
-	writeLog "Restarting jetty server"		
 	$_RESTART jettysrv 2>&1 | tee -a $LOG
 	
-	# Backup Jetty key store
-	writeLog "============================================================="
-	writeLog "Backup of Jetty keystore"
-	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-jetty9-etc.$timestamp.tar.gz ${JETTYSRV}/keystore ${JETTYSRV}/jetty-ssl.xml"
-	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-jetty9-etc.$timestamp.tar.gz ${JETTYSRV}/keystore ${JETTYSRV}/jetty-ssl.xml 2>&1 | tee -a $LOG
-		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive Jetty keystore files ${JETTYSRV}"	
 }
 	
 ####################################################
@@ -406,7 +392,7 @@ function backup_Jetty() {
 ####################################################
 function backup_Mongo() {
 	local _RESTART
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of MongoDB."
 	# MongoDB must be running. 
 	check_ServiceStatus tokumx init _RESTART && service tokumx start 2>&1  && sleep 10 | tee -a $LOG
@@ -434,9 +420,9 @@ function backup_Mongo() {
 
 	service tokumx $_RESTART 2>&1 | tee -a $LOG
 	
-	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz ${BACKUP}/$HOST-mongodb-dump.$timestamp"
+	writeLog "tar -C ${BACKUP} --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz $HOST-mongodb-dump.$timestamp"
 	tar -C ${BACKUP} --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-mongodb-dump.$timestamp.tar.gz $HOST-mongodb-dump.$timestamp 2>&1 | tee -a $LOG
-		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive MongoDB dump."		
+		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive MongoDB dump."	
 	rm -Rf ${BACKUP}/$HOST-mongodb-dump.$timestamp
 }	
 	
@@ -446,7 +432,7 @@ function backup_Mongo() {
 ####################################################################
 function backup_ESA() {
 	local _RESTART
-	writeLog "============================================================="	
+	writeLog "==================================================================="	
 	writeLog "Backup of ESA server: ${ESASERVER1}"
 	check_ServiceStatus rsa-esa init _RESTART || service rsa-esa stop 2>&1 | tee -a $LOG
 
@@ -469,7 +455,7 @@ function backup_ESA() {
 ####################################################################
 function backup_IM() {
 	local _RESTART
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of Incident Management: ${IM}"
 	check_ServiceStatus rsa-im init _RESTART || service rsa-im stop 2>&1 | tee -a $LOG	
 
@@ -490,7 +476,7 @@ function backup_IM() {
 ####################################################################
 function backup_SMS() {
 	local _RESTART
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of SMS: ${RSASMS}"
 	check_ServiceStatus rsa-sms init _RESTART || service rsa-sms stop 2>&1 | tee -a $LOG	
 
@@ -498,8 +484,7 @@ function backup_SMS() {
 	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-sms.$timestamp.tar.gz ${RSASMS} \
 		--exclude=${RSASMS}/lib \
 		--exclude=${RSASMS}/bin \
-		--exclude=${RSASMS}/scripts \
-		--exclude=${RSASMS}/db  2>&1 | tee -a $LOG
+		--exclude=${RSASMS}/scripts 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive RSA SMS files ${RSASMS}."	
 
 		service rsa-sms $_RESTART 2>&1 | tee -a $LOG		
@@ -511,8 +496,8 @@ function backup_SMS() {
 ####################################################################
 function backup_Malware() {
 	local _RESTART
-	writeLog "============================================================="
-	writeLog "Backup of Malware Analysis ${RSAMALWARE}"
+	writeLog "==================================================================="
+	writeLog "Backup of Malware Analysis: ${RSAMALWARE}"
 	check_ServiceStatus rsaMalwareDevice upstart _RESTART || stop rsaMalwareDevice 2>&1 && sleep 5 | tee -a $LOG	
 	
 	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-netwitness-rsamalware.$timestamp.tar.gz $RSAMALWARE"
@@ -542,11 +527,11 @@ function backup_Malware() {
 # LOGCOL=/var/netwitness/logcollector
 ####################################################################  
 function backup_LC() {
-	writeLog "============================================================="
-	writeLog "Backup of Log Collector ${LOGCOL}"
+	writeLog "==================================================================="
+	writeLog "Backup of Log Collector: ${LOGCOL}"
 	check_ServiceStatus nwlogcollector upstart _RESTART || stop nwlogcollector 2>&1  && sleep 5	| tee -a $LOG
 	writeLog "This may take long time. Please be patient..." 
-	writeLog "tar --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-netwitness-logcollector.$timestamp.tar.gz $LOGCOL"
+	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-netwitness-logcollector.$timestamp.tar.gz $LOGCOL"
 	
     tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-netwitness-logcollector.$timestamp.tar.gz $LOGCOL --exclude=$LOGCOL/metadb/core.* 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive the Log Collector files ${LOGCOL}."	
@@ -560,8 +545,8 @@ function backup_LC() {
 ####################################################################
 function backup_WHC() {  
 	local _RESTART
-	writeLog "============================================================="
-	writeLog "Backup of Warehouse Connector ${WHC}"
+	writeLog "==================================================================="
+	writeLog "Backup of Warehouse Connector: ${WHC}"
 	check_ServiceStatus nwwarehouseconnector upstart _RESTART || stop nwwarehouseconnector 2>&1 | tee -a $LOG	
 
 	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-netwitness-warehouseconnector.$timestamp.tar.gz $WHC"
@@ -581,7 +566,7 @@ function backup_WHC() {
 # /etc/krb5.conf
 #################################################################### 
 function backup_etc() { 
-	writeLog "============================================================="
+	writeLog "==================================================================="
     writeLog "Backup of OS files /etc"
 		
 	for file in $(ls -1tr /etc/sysconfig/network-scripts/ifcfg-*[0-9])
@@ -590,11 +575,10 @@ function backup_etc() {
 		sed -e '/^HWADDR=/ s/^#*/#/' -i "${file}.sa_backup"
 	done
 	
-    writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc.$timestamp.tar.gz /etc/sysconfig/network-scripts/ifcfg-eth* /etc/sysconfig/network /etc/hosts /etc/resolv.conf /etc/ntp.conf /etc/fstab /etc/krb5.conf"
+    writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc.$timestamp.tar.gz /etc/sysconfig/network-scripts/ifcfg-*[0-9] /etc/sysconfig/network /etc/hosts /etc/resolv.conf /etc/ntp.conf /etc/fstab /etc/krb5.conf"
     tar -C / --atime-preserve --recursion --transform s/.sa_backup// --transform s/fstab/fstab.${HOST}/ -cphzf ${BACKUP}/$HOST-etc.$timestamp.tar.gz /etc/sysconfig/network-scripts/ifcfg-*[0-9].sa_backup /etc/sysconfig/network /etc/hosts /etc/resolv.conf /etc/ntp.conf /etc/fstab /etc/krb5.conf 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive system configuration files."
-	# tar -zcf test.tar.gz --transform s/.sa_backup//
-	writeLog "/etc/fstab  was renamed to /etc/fstab.$HOST to prevent overwriting the original fstab on restore."
+	writeLog "/etc/fstab  was renamed to /etc/fstab.$HOST to prevent overwriting the original /etc/fstab on restore."
 	rm -f /etc/sysconfig/network-scripts/ifcfg-*[0-9].sa_backup
 }
 
@@ -604,12 +588,12 @@ function backup_etc() {
 ####################################################################
 function backup_MCO() {	
 	local _RESTART
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of mcollective"
 	check_ServiceStatus mcollective init _RESTART || service mcollective stop 2>&1 | tee -a $LOG	
 
-	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-mcollective.$timestamp.tar.gz ${MCO}/ssl ${MCO}/client.cfg ${MCO}/server.cfg" 
-	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-mcollective.$timestamp.tar.gz ${MCO}/ssl ${MCO}/*.cfg 2>&1 | tee -a $LOG
+	#writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-mcollective.$timestamp.tar.gz ${MCO}/ssl ${MCO}/client.cfg ${MCO}/server.cfg" 
+	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-mcollective.$timestamp.tar.gz ${MCO}/client.cfg ${MCO}/server.cfg ${MCO}/ssl 2>&1 | tee -a $LOG
 		syslogOnError ${PIPESTATUS[0]} "Failed to archive the mcollective conf files ${MCO}."	
 
 	service mcollective $_RESTART 2>&1 | tee -a $LOG		
@@ -623,14 +607,13 @@ function backup_MCO() {
 ####################################################################
 function backup_Puppet() {	
 	local _RESTART
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of Puppet"
 	check_ServiceStatus puppetmaster init _RESTART || service puppetmaster stop 2>&1 | tee -a $LOG	
 
 	writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz ${PUPPET1}/ssl ${PUPPET1}/node_id ${PUPPET2}/puppet.conf ${PUPPET2}/csr_attributes.yaml" 
-	#tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz ${PUPPET1}/ssl ${PUPPET1}/node_id ${PUPPET2}/puppet.conf ${PUPPET2}/csr_attributes.yaml 2>&1 | tee -a $LOG
-	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz ${PUPPET1}/ssl ${PUPPET1}/node_id ${PUPPET2} --exclude=${PUPPET1}/lib --exclude=${PUPPET1}/reports  2>&1 | tee -a $LOG
-		syslogOnError ${PIPESTATUS[0]} "Failed to archive the Puppet conf files ${PUPPET1}."	
+	tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz  ${PUPPET1}  ${PUPPET1}/node_id ${PUPPET2} --exclude=${PUPPET1}/lib --exclude=${PUPPET1}/bucket --exclude=${PUPPET1}/reports  2>&1 | tee -a $LOG
+		syslogOnError ${PIPESTATUS[0]} "Failed to archive the Puppet conf files."	
 
 	service puppetmaster $_RESTART 2>&1 | tee -a $LOG
 	# backup mcollective
@@ -643,8 +626,8 @@ function backup_Puppet() {
 ####################################################################
 function backup_RabbitMQ() {
 	local _RESTART
-	writeLog "============================================================="
-	writeLog "Backup of RabbitMQ DB - ${RABBITMQ}" 
+	writeLog "==================================================================="
+	writeLog "Backup of RabbitMQ DB: ${RABBITMQ}" 
 	check_ServiceStatus rabbitmq-server init _RESTART || service rabbitmq-server stop 2>&1 && sleep 10 | tee -a $LOG	
 
 	writeLog "tar -czvf ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ}" 
@@ -663,7 +646,7 @@ function backup_RabbitMQ() {
 ####################################################################
 function backup_PostgreSQL() {
 	local _RESTART
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Backup of PostgreSQL"
 	# in case it is upgraded making an afford to find any version of Postgres
 	PGDATA=$(find /etc/init.d/ -name postgresql* -exec cat {} \;  | grep -m 1 "PGDATA=" | sed 's/^PGDATA=//')
@@ -690,14 +673,13 @@ function backup_PostgreSQL() {
 # create a single tarball
 create_tarball(){
 	local _RETURNVAL
-	writeLog "============================================================="
+	writeLog "==================================================================="
 	writeLog "Creating tarball ${HOST}-${timestamp}.tar"
 	tar -C ${BACKUPPATH} -cvf ${BACKUPPATH}/${HOST}-${timestamp}.tar --label="The backup of Security Analytics appliance ${SAMAJOR}.${SAMINOR} - ${HOST} taken on ${timestamp}." ${HOST}-${timestamp} 2>&1 | tee -a $LOG	
 	_RETURNVAL=${PIPESTATUS[0]}
 	syslogOnError ${_RETURNVAL} "SA backup failed to tarball the backup files."
 	if [ ${_RETURNVAL} = 0 ];  then 
 		writeLog "The backup archive ${BACKUPPATH}/${HOST}-${timestamp}.tar is created"
-		#tar -tf ${BACKUPPATH}/${HOST}-${timestamp}.tar 2>&1 | tee -a $LOG
 		writeLog "" 
 		rm -fR ${BACKUP}
 	fi
@@ -730,7 +712,6 @@ do_Backup() {
 	for i in "${!COMPONENT[@]}"; do writeLog "- $i"; done
 
 	if [[ $SAMINOR -ge 4 ]]; then 
-		writeLog "Stopping Puppet agent."
 		service puppet stop 2>&1 | tee -a $LOG
 	fi
 
@@ -740,13 +721,13 @@ do_Backup() {
 	done
 	
 	if [[ $SAMINOR -ge 4 ]]; then 
-		writeLog "Starting Puppet agent."
 		service puppet start 2>&1 | tee -a $LOG
 	fi	
 
 }
 
 main(){
+	echo -e ${COL_BLUE}"BACKUP TOOL for RSA Security Analytics 10.3 - 10.5 - version ${VER}"${COL_RESET}
 	writeLog "STARTING $HOST BACKUP"
 	mkdir -p ${BACKUP}
 
@@ -758,7 +739,7 @@ main(){
 	what_to_backup
 	
 	do_Backup
-	create_tarball
+	#create_tarball
 	#copy_RemoteSCP 
 
 	do_Cleanup
