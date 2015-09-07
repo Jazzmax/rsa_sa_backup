@@ -122,17 +122,17 @@ This script must be run as "root" user.
 
 ### Version history
 
-1.0.7     
-		+ Added command line arguments
-		+ Added a configuration file to enable/disable backup of components
-		+ Added a new option to backup custom user files
-		+ Added a test mode
-		* Fixed: Cleanup removing non-backup folders
-		* Exclude core files from the Warehouse connector backup
-		+ Added a tar progress indication
-		* Improved reporting engine exlusion list
-		+ Added option to backup only one component - see the usage
-		
+1.0.7  
+        + Added command line arguments
+        + Added a configuration file to enable/disable backup of components
+        + Added a new option to backup custom user files
+        + Added a test mode
+        * Fixed: Cleanup removing non-backup folders
+        * Exclude core files from the Warehouse connector backup
+        + Added a tar progress indication
+        * Improved reporting engine exlusion list
+        + Added option to backup only one component - see the usage
+        
 1.0.6   
         * Optimized the core services backup. Saving files without stopping services 
         * SA server backup consolidated into a single file including: uax, jetty and carlos keystores
