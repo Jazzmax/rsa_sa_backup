@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.7
+VER=1.0.8
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
@@ -19,6 +19,7 @@ VER=1.0.7
 ##
 #######################################################################
 # # New in this version 
+# 1.0.8		* Fixed a typo in the ESA backup configuration 
 # 1.0.7     + Added command line arguments
 #           + Added a configuration file to enable/disable backup of components
 #           + Added a new option to backup custom user files
@@ -69,7 +70,7 @@ MONGODB_ENABLED=true
 MALWARE_ENABLED=true
 
 # ESA 
-ESA_EANBLED=true
+ESA_ENABLED=true
 
 # Incident Management
 IM_ENABLED=true

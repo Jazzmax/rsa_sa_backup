@@ -122,6 +122,9 @@ This script must be run as "root" user.
 
 ### Version history
 
+1.0.8 
+  * Fixed a type in the ESA backup configuration
+
 1.0.7  
   + Added command line arguments
   + Added an inline/file configuration to enable/disable backup of components
