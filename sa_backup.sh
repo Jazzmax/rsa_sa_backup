@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.8
+VER=1.0.9
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
@@ -19,6 +19,7 @@ VER=1.0.8
 ##
 #######################################################################
 # # New in this version 
+# 1.0.9		* Fixed: Mongo backup never taken
 # 1.0.8		* Fixed a typo in the ESA backup configuration 
 # 1.0.7     + Added command line arguments
 #           + Added a configuration file to enable/disable backup of components
@@ -217,7 +218,9 @@ check_root(){
 ## Cleanup the Backup Staging Area
 ####################################################################
 function do_Cleanup {
+	writeLog "Cleaning up."
     if [[ ${RETENTION_DAYS} -ne 0 ]]; then 
+
         find "${BACKUPPATH}" -maxdepth 1 -name "${HOST}-*" -type d -mtime +${RETENTION_DAYS} -exec rm -Rvf {} \; 2>&1 | tee -a $LOG;
     fi
     rm -rf $PID_FILE ${COMPONENT_MARKER[CUSTOM]}
@@ -323,7 +326,7 @@ function what_to_backup() {
 										
 	for i in "${!COMPONENT_MARKER[@]}"; do
 		q=${i}"_ENABLED"
-		if [ -d "${COMPONENT_MARKER[$i]}" ]; then
+		if [ -e "${COMPONENT_MARKER[$i]}" ]; then
 			echo -n "- ${COMPONENT_DESC[$i]} " 2>&1 | tee -a $LOG
 			if [ "${!q}" = true ]; then 
 				COMPONENT+=([$i]="${COMPONENT_BK_FUNCT[$i]}")
@@ -772,25 +775,22 @@ function copy_RemoteSCP()
 
 
 do_Backup() {
-
-    if [[ $SAMINOR -ge 4 ]]; then 
-        service puppet stop 2>&1 | tee -a $LOG
-    fi
-    
     if [[ $TESTMODE -eq 0 ]]; then
-        for i in "${COMPONENT[@]}"
+		if [[ $SAMINOR -ge 4 ]]; then 
+			service puppet stop 2>&1 | tee -a $LOG
+		fi
+		mkdir -p ${BACKUP}
+		for i in "${COMPONENT[@]}"
         do
             $i
         done
-    else
+		if [[ $SAMINOR -ge 4 ]]; then 
+			service puppet start 2>&1 | tee -a $LOG
+		fi  
+	else
         # Test mode
         writeLog "Test mode: Nothing will be backed up. Exiting."
     fi
-    
-    if [[ $SAMINOR -ge 4 ]]; then 
-        service puppet start 2>&1 | tee -a $LOG
-    fi  
-
 }
 
 #########################
@@ -890,7 +890,6 @@ main(){
     echo -e ${COL_BLUE}"BACKUP TOOL for RSA Security Analytics 10.3 - 10.5 - version ${VER}"${COL_RESET}
     get_Args
     writeLog "STARTING $HOST BACKUP"
-    mkdir -p ${BACKUP}
     check_root
     check_isRun $SCRIPT_NAME
     check_SAVersion
@@ -902,6 +901,7 @@ main(){
     #copy_RemoteSCP 
 
     do_Cleanup
+	writeLog "The backup saved in ${BACKUP}"
     writeLog "END $HOST BACKUP"
 }
 

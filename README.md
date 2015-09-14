@@ -122,8 +122,11 @@ This script must be run as "root" user.
 
 ### Version history
 
+1.0.9 
+  * Fixed: Mongo backup never taken
+  
 1.0.8 
-  * Fixed a type in the ESA backup configuration
+  * Fixed a typo in the ESA backup configuration
 
 1.0.7  
   + Added command line arguments
