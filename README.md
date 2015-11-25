@@ -122,6 +122,10 @@ This script must be run as "root" user.
 
 ### Version history
 
+1.0.10
+  * Excluded log files from ESA, SMS, IM backup 
+  * Improved Puppet backup. Stopping the puppet master only on SA server.  
+
 1.0.9 
   * Fixed: Mongo backup never taken
   

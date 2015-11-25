@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.9
+VER=1.0.10
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
@@ -19,8 +19,10 @@ VER=1.0.9
 ##
 #######################################################################
 # # New in this version 
-# 1.0.9		* Fixed: Mongo backup never taken
-# 1.0.8		* Fixed a typo in the ESA backup configuration 
+# 1.0.10    * Excluded log files from ESA, SMS, IM backup 
+#           * Improved Puppet backup. Stopping the puppet master only on SA server. 
+# 1.0.9     * Fixed: MongoDB is not identified 
+# 1.0.8     * Fixed a typo in the ESA backup configuration 
 # 1.0.7     + Added command line arguments
 #           + Added a configuration file to enable/disable backup of components
 #           + Added a new option to backup custom user files
@@ -486,11 +488,12 @@ function backup_ESA() {
 
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 --exclude=${ESASERVER1}/lib --exclude=${ESASERVER1}/bin    --exclude=${ESASERVER1}/geoip --exclude=${ESASERVER1}/db --exclude=${ESASERVER1}/temp --exclude=${ESASERVER1}/client"
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 \
-        --exclude=${ESASERVER1}/lib \
+        --exclude=${ESASERVER1}/log/* \
+		--exclude=${ESASERVER1}/lib \
         --exclude=${ESASERVER1}/bin \
         --exclude=${ESASERVER1}/geoip \
         --exclude=${ESASERVER1}/db \
-        --exclude=${ESASERVER1}/temp \
+        --exclude=${ESASERVER1}/temp/* \
         --exclude=${ESASERVER1}/client 2>&1 | tee -a $LOG
         syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive ESA files ${ESASERVER1}."
         
@@ -509,7 +512,8 @@ function backup_IM() {
 
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} --exclude=${IM}/lib --exclude=${IM}/bin --exclude=${IM}/scripts --exclude=${IM}/db"
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} \
-        --exclude=${IM}/lib \
+        --exclude=${IM}/log/* \
+		--exclude=${IM}/lib \
         --exclude=${IM}/bin \
         --exclude=${IM}/scripts \
         --exclude=${IM}/db  2>&1 | tee -a $LOG
@@ -530,6 +534,7 @@ function backup_SMS() {
 
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-sms.$timestamp.tar.gz ${RSASMS} --exclude=${RSASMS}/lib --exclude=${RSASMS}/bin --exclude=${RSASMS}/scripts --exclude=${RSASMS}/db"
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-opt-rsa-sms.$timestamp.tar.gz ${RSASMS} \
+        --exclude=${RSASMS}/log/* \
         --exclude=${RSASMS}/lib \
         --exclude=${RSASMS}/bin \
         --exclude=${RSASMS}/scripts 2>&1 | tee -a $LOG
@@ -656,14 +661,18 @@ function backup_MCO() {
 function backup_Puppet() {  
     local _RESTART
     writeLog "==================================================================="
-    writeLog "Backup of Puppet"
-    check_ServiceStatus puppetmaster init _RESTART || service puppetmaster stop 2>&1 | tee -a $LOG  
-
+    writeLog "Backup of Puppet (agent/master)"
+	if [ -f /etc/init.d/puppetmaster ]; then
+		check_ServiceStatus puppetmaster init _RESTART || service puppetmaster stop 2>&1 | tee -a $LOG  
+	fi
+	
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz ${PUPPET1}/ssl ${PUPPET1}/node_id ${PUPPET2}/puppet.conf ${PUPPET2}/csr_attributes.yaml" 
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-var-lib-puppet-etc.$timestamp.tar.gz  ${PUPPET1}  ${PUPPET1}/node_id ${PUPPET2} --exclude=${PUPPET1}/lib --exclude=${PUPPET1}/bucket --exclude=${PUPPET1}/reports  2>&1 | tee -a $LOG
         syslogOnError ${PIPESTATUS[0]} "Failed to archive the Puppet conf files."   
 
-    service puppetmaster $_RESTART 2>&1 | tee -a $LOG
+	if [ -f /etc/init.d/puppetmaster ]; then
+		service puppetmaster $_RESTART 2>&1 | tee -a $LOG
+	fi	
     # backup mcollective
     backup_MCO
 }
@@ -787,6 +796,7 @@ do_Backup() {
 		if [[ $SAMINOR -ge 4 ]]; then 
 			service puppet start 2>&1 | tee -a $LOG
 		fi  
+		writeLog "The backup saved in ${BACKUP}"
 	else
         # Test mode
         writeLog "Test mode: Nothing will be backed up. Exiting."
@@ -901,7 +911,7 @@ main(){
     #copy_RemoteSCP 
 
     do_Cleanup
-	writeLog "The backup saved in ${BACKUP}"
+	
     writeLog "END $HOST BACKUP"
 }
 
