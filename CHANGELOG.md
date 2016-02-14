@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 **Added**
 * Added a remote backup to NFS
 + Added components backup ordering. Thanks to Lee McCotter
+
 **Changed**
 + Remote backup to NFS 
 - Removed MCollective backup as redundant (fully puppet managed service)
@@ -37,9 +38,11 @@ All notable changes to this project will be documented in this file.
 + Added a test mode
 + Added a tar progress indication
 + Added option to backup only one component - see the usage
+
 **Changed**
 * Exclude core files from the Warehouse connector backup
 * Improved reporting engine exclusion list
+
 **Fixed**
 * Cleanup removing non-backup files and folders
         
@@ -49,6 +52,7 @@ All notable changes to this project will be documented in this file.
 * SA server backup consolidated into a single file including: uax, jetty and carlos keystores
 * Changes around puppetmaster backup. Fuller backup.
 * Disabled a single tar creation as redundant
+
 **Fixed**
 * Fixed RSA SMS backup - added the db directory. 
 
@@ -63,8 +67,10 @@ All notable changes to this project will be documented in this file.
 + Added RSA SMS backup
 + Added mcollective backup
 + tarball all archives in a single file
+
 **Changed**
 + Disabling HWADDR parameter in network configuration scripts before archiving
+
 **Fixed**
 * Fixed pupetmaster backup (added entire /etc/puppet)
 * Now taking ifcfg-*[0-9] instead of ifcfg-eth*
@@ -76,6 +82,7 @@ All notable changes to this project will be documented in this file.
 ### 1.0.2 - 2015-06-22
 **Fixed**
 * Fixed removing old archives
+
 **Added**
 + SA version check (based on Joshua Newton code)
 + Improved user/log output. Added list of components to be backed up
