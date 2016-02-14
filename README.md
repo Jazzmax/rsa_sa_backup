@@ -120,65 +120,7 @@ This script must be run as "root" user.
 4. Push to the branch: `git push origin my-new-feature`
 5. Submit a pull request :D
 
-### Version history
 
-1.0.10
-  * Excluded log files from ESA, SMS, IM backup 
-  * Improved Puppet backup. Stopping the puppet master only on SA server.  
-
-1.0.9 
-  * Fixed: Mongo backup never taken
-  
-1.0.8 
-  * Fixed a typo in the ESA backup configuration
-
-1.0.7  
-  + Added command line arguments
-  + Added an inline/file configuration to enable/disable backup of components
-  + Added a new option to backup custom user files
-  + Added a test mode
-  * Fixed: Cleanup removing non-backup folders
-  * Exclude core files from the Warehouse connector backup
-  + Added a tar progress indication
-  * Improved reporting engine exlusion list
-  + Added option to backup only one component - see the usage
-        
-1.0.6   
-  * Optimized the core services backup. Saving files without stopping services 
-  * SA server backup consolidated into a single file including: uax, jetty and carlos keystores
-  * Fixed RSA SMS backup -  added db directory. 
-  * Changes around puppetmaster backup. Fuller backup.          
-  * Disabled a single tar creation as redundant 
-
-1.0.5	
-  * Bug fixes: mcollective backup; single tar creation and cleanup.
-
-1.0.4
-  + Added RSA SMS backup
-  * Fixed pupetmaster backup (added entire /etc/puppet)
-  + tarball all archives in a single file
-  + Added mcollective backup
-  * Now taking ifcfg-*[0-9] instead of ifcfg-eth*
-  + Disabling HWADDR parameter in network configuration scripts before archiving 
-  * Added support for 10.5
-
-1.0.3
-  * Fixed SA version check
-
-1.0.2		
-  * Fixed removing old archives
-  + SA version check (based on Joshua Newton code)
-  + Improved user/log output. Added list of components to be backed up
-  + Improved RabbitMQ configuration backup
-  + Added support of 10.3
-  + Added PestgreSQL backup for 10.3
-
-1.0.1		
-  + Code refactoring around service start/stop
-  * Bug fixes
-
-1.0.0	- Initial version
-			
 ### License
 
   This script is free software: you can redistribute it and/or modify it under

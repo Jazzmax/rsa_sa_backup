@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.10
+VER=1.0.11
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
@@ -19,22 +19,17 @@ VER=1.0.10
 ##
 #######################################################################
 # # New in this version 
+# 1.0.11    + Remote backup to NFS 
+#           + Added components backup ordering. Thanks to Lee McCotter
+#           - Removed MCollective backup as redundant (fully puppet managed service)
+#           * Excluded feeds from Core appliance backup
+#           * Bug fixes and stability improvements
 # 1.0.10    * Excluded log files from ESA, SMS, IM backup 
 #           * Improved Puppet backup. Stopping the puppet master only on SA server. 
-# 1.0.9     * Fixed: MongoDB is not identified 
-# 1.0.8     * Fixed a typo in the ESA backup configuration 
-# 1.0.7     + Added command line arguments
-#           + Added a configuration file to enable/disable backup of components
-#           + Added a new option to backup custom user files
-#           + Added test mode
-#           * Fixed: Cleanup removing non-backup folders
-#           * Exclude core files from the Warehouse connector backup 
-#           + Added a tar progress indication
-#			* Improved reporting engine exlusion list
-#			+ Added option to backup only one component
+# 1.0.9		* Fixed: MongoDB is not identified 
+# 1.0.8		* Fixed a typo in the ESA backup configuration 
 #----------------------------------------------------------------------
 # TO DO:
-# - Remote backup files 
 # - Check if enough disk space to create a backup
 # - Encrypt backup file 
 # - platform.db to take lobs.db/* or dump the db as per docs
@@ -42,10 +37,11 @@ VER=1.0.10
 #######################################################################
 # Configuration section
 
+BACKUP_TYPE=local						# local | nfs 
 BACKUPPATH=/root/sabackups              # Local backup directory
 LOG=sa_backup.log                       # The backup log file
 LOG_MAX_DIM=10000000                    # Max size of log file in bytes - 10MB 
-RETENTION_DAYS=0	                  	# Local backups retention in days (0 - no cleanup)
+RETENTION_DAYS=0	                  	# Local and NFS backups retention in days (0 - no cleanup)
 					
 # System files 
 SYS_ENABLED=true
@@ -97,7 +93,11 @@ CUSTOM=""
 CUSTOM_EXCLUDE=""      
 
 #----------------------------------------------------------------------
-	  
+# Remote NFS  
+NFSMOUNT=""  					# local mount point. No backslash at the end of this. e.g. "/mount-point"
+NFSDIR=""                       # NFS exported directory. No backslash at the end of this. e.g. "nfsservername:/backups/SA/COREs"
+
+#----------------------------------------------------------------------
 # Remote NAS - NOT IMPLEMENTED 
 #SSH_HOST=192.168.12.102
 #SSH_USERNAME=backup
@@ -139,31 +139,34 @@ LOGCOL=/var/netwitness/logcollector
 RABBITMQ=/var/lib/rabbitmq              # on log collector symlink to /var/netwitness/logcollector/rabbitmq
 WHC=/var/netwitness/warehouseconnector
 POSTGRESQL=/var/lib/pgsql
-TESTMODE=0                              # Test mode	                             
+TESTMODE=0                              # Test mode	                       
 BACKUPONLY=""
 declare -A COMPONENT
 declare -a ARGS
+# Markers are used to detect the components
 declare -A COMPONENT_MARKER=( \
 	[SYS]="/etc" [CUSTOM]="/tmp/sa_backup_custom" [PUPPET]="/var/lib/puppet" [RABBITMQ]="/var/lib/rabbitmq" \
 	[CORE]="/etc/netwitness/ng" [MONGODB]="/etc/init.d/tokumx" [SASERVER]="/var/lib/netwitness/uax" \
 	[RE]="/home/rsasoc/rsa/soc/reporting-engine" [MALWARE]="/var/lib/netwitness/rsamalware" \
 	[ESA]="/opt/rsa/esa" [IM]="/opt/rsa/im" [LC]="/var/netwitness/logcollector" \
 	[WHC]="/var/netwitness/warehouseconnector" [PGSQL]="/var/lib/pgsql" [SMS]="/opt/rsa/sms" )
-	
+# Backup function names 	
 declare -A COMPONENT_BK_FUNCT=( \
 	[SYS]="backup_etc" [CUSTOM]="backup_Custom" [PUPPET]="backup_Puppet" [RABBITMQ]="backup_RabbitMQ" \
 	[CORE]="backup_CoreAppliance" [MONGODB]="backup_Mongo" [SASERVER]="backup_Jetty" \
 	[RE]="backup_RE" [MALWARE]="backup_Malware" \
 	[ESA]="backup_ESA" [IM]="backup_IM" [LC]="backup_LC" \
 	[WHC]="backup_WHC" [PGSQL]="backup_PostgreSQL" [SMS]="backup_SMS")
-										
+# Components descriptions 									
 declare -A COMPONENT_DESC=( \
 	[SYS]="OS configuration files" [CUSTOM]="Custom files" [PUPPET]="Puppet master/agent" [RABBITMQ]="RabbitMQ server" \
 	[CORE]="Core Appliance Services" [MONGODB]="MongoDB dump" [SASERVER]="SA web server" \
 	[RE]="Reporting Engine" [MALWARE]="Malware Analysis" \
 	[ESA]="Event Stream Analysis" [IM]="Incident Management server" [LC]="Log Collector database" \
 	[WHC]="Warehouse Connector database" [PGSQL]="PostgreSQL database" [SMS]="System Management Server")		
-	
+# Backup order 
+declare -a SERVICE_BK_ORDER=( RABBITMQ RE SMS ESA IM MALWARE PGSQL LC SASERVER MONGODB WHC PUPPET CORE SYS CUSTOM )
+
 CONFIGFILE=""
 
 ####################################################################
@@ -209,7 +212,7 @@ function syslogOnError() {
 ####################################################################
 # Check is run as root
 ####################################################################
-check_root(){
+function check_root(){
   if [ "$(id -u)" != "0" ]; then
     writeLog "ERROR: This script must be run as root!"
     exitOnError 1 "ERROR: This script must be run as root!"
@@ -220,14 +223,19 @@ check_root(){
 ## Cleanup the Backup Staging Area
 ####################################################################
 function do_Cleanup {
-	writeLog "Cleaning up."
-    if [[ ${RETENTION_DAYS} -ne 0 ]]; then 
-
-        find "${BACKUPPATH}" -maxdepth 1 -name "${HOST}-*" -type d -mtime +${RETENTION_DAYS} -exec rm -Rvf {} \; 2>&1 | tee -a $LOG;
+	local _CLEANUP_PATH=${BACKUPPATH}
+	if [[ ! -z $1 ]]; then 
+        _CLEANUP_PATH=$1
     fi
+	if [[ $TESTMODE -eq 0 ]]; then
+		writeLog "Cleaning up ${_CLEANUP_PATH}."
+		if [[ ${RETENTION_DAYS} -ne 0 ]]; then 
+			find "${_CLEANUP_PATH}" -maxdepth 1 -name "${HOST}-*" -mtime +${RETENTION_DAYS} -exec rm -Rvf {} \; 2>&1 | tee -a $LOG;
+		fi
+	fi
     rm -rf $PID_FILE ${COMPONENT_MARKER[CUSTOM]}
 }
-trap do_Cleanup HUP INT QUIT TERM EXIT
+trap do_Cleanup HUP INT QUIT TERM 
 
 ####################################################################
 # Check if another instance is running
@@ -259,7 +267,7 @@ function rotate_Logs() {
 ####################################################################
 # Check if the SA version is 10.3 or higher (based on Josh Newton's sa_diag)
 ####################################################################
-check_SAVersion() {
+function check_SAVersion() {
     SA_APP_VER_TEMP=`mktemp`
     # Get the (apparent) installed SA version
     SA_APP_TYPE_TEMP=$(rpm -qa --qf '%{NAME}\n' | grep -E '^(nw|jetty|rsa-[a-z,A-Z]*|rsa[m,M]|re-server)' | grep -Ev 'rsa-sa-gpg-pubkeys')
@@ -326,18 +334,22 @@ function what_to_backup() {
 	
     writeLog "The components to back up:"
 										
-	for i in "${!COMPONENT_MARKER[@]}"; do
-		q=${i}"_ENABLED"
-		if [ -e "${COMPONENT_MARKER[$i]}" ]; then
-			echo -n "- ${COMPONENT_DESC[$i]} " 2>&1 | tee -a $LOG
-			if [ "${!q}" = true ]; then 
-				COMPONENT+=([$i]="${COMPONENT_BK_FUNCT[$i]}")
-				echo 2>&1 | tee -a $LOG
-			else
-				echo -e ${COL_YELLOW}"Disabled"${COL_RESET}	2>&1 | tee -a $LOG
-			fi
-		fi		
-	done	
+    for service in "${SERVICE_BK_ORDER[@]}"; do
+        q=$service"_ENABLED"
+        # If service exists in COMPONENT_MARKER & COMPONENT_DESC
+        if [[ ${COMPONENT_MARKER[$service]+_} && ${COMPONENT_DESC[$service]+_} ]]; then
+            if [[ -e ${COMPONENT_MARKER[$service]} ]]; then
+                echo -n "- ${COMPONENT_DESC[$service]} " 2>&1 | tee -a $LOG
+                if [ "${!q}" = true ]; then 
+                    COMPONENT+=([$service]="${COMPONENT_BK_FUNCT[$service]}")
+                    echo 2>&1 | tee -a $LOG
+                else
+                    echo -e ${COL_YELLOW}"Disabled"${COL_RESET} 2>&1 | tee -a $LOG
+                fi
+            fi
+        fi
+    done
+
 
 	if [ -n "$BACKUPONLY" ]; then
 		COMPONENT=([$BACKUPONLY]="${COMPONENT_BK_FUNCT[$BACKUPONLY]}")
@@ -352,13 +364,12 @@ function what_to_backup() {
 # COREAPP=/etc/netwitness/
 ####################################################################
 function backup_CoreAppliance() {
-    local _RESTART
-    local _SERVICE_RESTART=()
+
     writeLog "==================================================================="
     writeLog "Backup of Core appliance ${COREAPP}"
     
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-etc-netwitness.$timestamp.tar.gz ${COREAPP}"
-    tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-etc-netwitness.$timestamp.tar.gz ${COREAPP} --exclude=${COREAPP}/Geo*.dat --exclude=${COREAPP}/envision/etc/devices --exclude=${COREAPP}/logcollection/content 2>&1 | tee -a $LOG
+    tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-etc-netwitness.$timestamp.tar.gz ${COREAPP} --exclude=${COREAPP}/Geo*.dat --exclude=${COREAPP}/envision/etc/devices --exclude=${COREAPP}/logcollection/content --exclude=${COREAPP}/feeds 2>&1 | tee -a $LOG
         syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive Core appliance configuration files ${COREAPP}."
         
 }   
@@ -454,14 +465,14 @@ function backup_Mongo() {
     fi
 
     #Force file synchronization and lock writes
-    writeLog "Force file synchronization and lock writes"
-    mongo admin --eval "printjson(db.fsyncLock())" 2>&1 | tee -a $LOG
+    #writeLog "Force file synchronization and lock writes"
+    #mongo admin --eval "printjson(db.fsyncLock())" 2>&1 | tee -a $LOG
     writeLog "mongodump --out ${BACKUP}/$HOST-mongodb-dump.$timestamp"
     mongodump --out ${BACKUP}/$HOST-mongodb-dump.$timestamp 2>&1 | tee -a $LOG
         syslogOnError ${PIPESTATUS[0]} "SA backup failed to dump the Mongo DB." 
     #Unlock database writes
-    writeLog "Unlocking database writes"
-    mongo admin --eval "printjson(db.fsyncUnlock())" 2>&1 | tee -a $LOG
+    #writeLog "Unlocking database writes"
+    #mongo admin --eval "printjson(db.fsyncUnlock())" 2>&1 | tee -a $LOG
 
     if [ -d /opt/rsa/esa ]; then 
         sed -i "s/\(auth *= *\).*/\1true/" /etc/tokumx.conf 
@@ -488,7 +499,7 @@ function backup_ESA() {
 
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 --exclude=${ESASERVER1}/lib --exclude=${ESASERVER1}/bin    --exclude=${ESASERVER1}/geoip --exclude=${ESASERVER1}/db --exclude=${ESASERVER1}/temp --exclude=${ESASERVER1}/client"
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-opt-rsa-esa.$timestamp.tar.gz $ESASERVER1 \
-        --exclude=${ESASERVER1}/log/* \
+        --exclude=${ESASERVER1}/log \
 		--exclude=${ESASERVER1}/lib \
         --exclude=${ESASERVER1}/bin \
         --exclude=${ESASERVER1}/geoip \
@@ -510,9 +521,9 @@ function backup_IM() {
     writeLog "Backup of Incident Management: ${IM}"
     check_ServiceStatus rsa-im init _RESTART || service rsa-im stop 2>&1 | tee -a $LOG  
 
-    writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} --exclude=${IM}/lib --exclude=${IM}/bin --exclude=${IM}/scripts --exclude=${IM}/db"
+    writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} --exclude=${IM}/log/* --exclude=${IM}/lib --exclude=${IM}/bin --exclude=${IM}/scripts --exclude=${IM}/db"
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} \
-        --exclude=${IM}/log/* \
+        --exclude=${IM}/log \
 		--exclude=${IM}/lib \
         --exclude=${IM}/bin \
         --exclude=${IM}/scripts \
@@ -534,7 +545,7 @@ function backup_SMS() {
 
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-sms.$timestamp.tar.gz ${RSASMS} --exclude=${RSASMS}/lib --exclude=${RSASMS}/bin --exclude=${RSASMS}/scripts --exclude=${RSASMS}/db"
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-opt-rsa-sms.$timestamp.tar.gz ${RSASMS} \
-        --exclude=${RSASMS}/log/* \
+        --exclude=${RSASMS}/log \
         --exclude=${RSASMS}/lib \
         --exclude=${RSASMS}/bin \
         --exclude=${RSASMS}/scripts 2>&1 | tee -a $LOG
@@ -674,7 +685,7 @@ function backup_Puppet() {
 		service puppetmaster $_RESTART 2>&1 | tee -a $LOG
 	fi	
     # backup mcollective
-    backup_MCO
+    # backup_MCO
 }
 
 ####################################################################
@@ -729,7 +740,7 @@ function backup_PostgreSQL() {
 ####################################################################
 ## Backup user custom files/folders
 ####################################################################
-backup_Custom(){
+function backup_Custom(){
     local _EXCL_FILES=""
     writeLog "==================================================================="
     writeLog "Backup Custom files: ${CUSTOM}"
@@ -748,14 +759,15 @@ backup_Custom(){
 
 # create a single tarball
 create_tarball(){
+	local _RPATH=$1
     local _RETURNVAL
     writeLog "==================================================================="
     writeLog "Creating tarball ${HOST}-${timestamp}.tar"
-    tar -C ${BACKUPPATH} --totals --checkpoint=. $TARVERBOSE -cvf ${BACKUPPATH}/${HOST}-${timestamp}.tar --label="The backup of Security Analytics appliance ${SAMAJOR}.${SAMINOR} - ${HOST} taken on ${timestamp}." ${HOST}-${timestamp} 2>&1 | tee -a $LOG    
+    tar -C ${BACKUPPATH} --totals --checkpoint=. $TARVERBOSE -cvf ${_RPATH}/${HOST}-${timestamp}.tar ${HOST}-${timestamp} 2>&1 | tee -a $LOG    
     _RETURNVAL=${PIPESTATUS[0]}
-    syslogOnError ${_RETURNVAL} "SA backup failed to tarball the backup files."
+    syslogOnError ${_RETURNVAL} "SA backup failed to tarball the backup files to ${_RPATH}"
     if [ ${_RETURNVAL} = 0 ];  then 
-        writeLog "The backup archive ${BACKUPPATH}/${HOST}-${timestamp}.tar is created"
+        writeLog "The backup archive ${_RPATH}/${HOST}-${timestamp}.tar is created"
         writeLog "" 
         rm -fR ${BACKUP}
     fi
@@ -770,7 +782,7 @@ function copy_RemoteSCP()
     SSH_HOST=$1
     SSH_USERNAME=$2
     REMOTE_DIR=$3
-    if [[! -z $4 ]]; then 
+    if [[ ! -z $4 ]]; then 
         SSH_IDENTITY_FILENAME="-i $4"
     fi
     SOURCE_FILENAME="${BACKUPPATH}/${HOST}-${timestamp}.tar"
@@ -782,31 +794,127 @@ function copy_RemoteSCP()
 
 }
 
+function check_MountPoint() {
+	# This function check if the given argument exists AND is a directory
+	local _mount_point="${1}"
+	if [[ ! -d ${_mount_point} ]] ; then
+		echo -e ${COL_RED} "ERROR: Mount point does not exist (${_mount_point})" ${COL_RESET} 2>&1 | tee -a $LOG
+		return 1
+	fi
+}
 
-do_Backup() {
+function check_isMounted() {
+	# This function checks if the given argument is already mounted
+	local _mount_point="${1}"
+	if mount | grep ${_mount_point} &>/dev/null ; then
+		writeLog "Info : ${_mount_point} is already mounted" && return 1
+	fi
+}
+
+function mount_NFS () {
+	# This function mount each given arguments (must be given as $1=exported_dir $2=mount_point)
+	local _exported_dir="${1}"
+	local _mount_point="${2}"
+	#  check if the required mount point exists
+	if  check_MountPoint ${_mount_point} ; then # if mount point exists
+		if ! check_isMounted ${_mount_point} ; then # if it is already mounted
+			return 0
+		else
+
+			if mount -o nolock -t nfs ${_exported_dir} ${_mount_point} &>/dev/null ; then
+				writeLog "${_exported_dir} is now mounted on ${_mount_point}"
+			else
+				echo -e ${COL_RED} "ERROR: ${_exported_dir} could not be mounted on ${_mount_point}"${COL_RESET} 2>&1 | tee -a $LOG
+				return 1
+			fi		
+
+		fi
+	else
+		return 1
+	fi
+}
+
+function unmount_NFS () {
+	local _mount_point="${1}"
+	
+	if umount ${_mount_point} &>/dev/null ; then
+		writeLog "${_mount_point} has been unmounted."
+	else
+		echo -e ${COL_RED} "ERROR: {_mount_point} could not be unmounted."${COL_RESET} 2>&1 | tee -a $LOG
+		return 1
+	fi
+}
+
+function check_Remote()
+{
+	local _REMOTE_TYPE="$1"
+	
+	if [[ "${_REMOTE_TYPE}" = "nfs" ]]; then
+		writeLog "Selected the remote backup to NFS."
+		if [[ ! -z ${NFSDIR} && ! -z ${NFSMOUNT} ]]; then
+			if ! mount_NFS ${NFSDIR} ${NFSMOUNT} ; then
+				echo -e ${COL_YELLOW} "Unable to mount NFS. Switching to the local backup."${COL_RESET} 2>&1 | tee -a $LOG
+				BACKUP_TYPE=local
+				return 1
+			fi
+		else
+			echo -e ${COL_YELLOW}"WARN: NFSDIR and NFSMOUNT not set. Switching to a local backup."${COL_RESET} 2>&1 | tee -a $LOG
+			BACKUP_TYPE=local
+			return 1
+		fi
+	fi
+	return 0
+}
+
+function do_Remote() {
+	
+	if [[ "${BACKUP_TYPE}" = "local" ]] ; then
+		return 1
+	fi
+	
+	if [[ $TESTMODE -eq 0 ]]; then
+		if [[ "${BACKUP_TYPE}" = "nfs" ]] ; then
+			writeLog "Copying the backup to the remote NFS ${NFSDIR} as a single TAR file."
+			create_tarball ${NFSMOUNT} || return 1
+			do_Cleanup ${NFSMOUNT}
+			unmount_NFS ${NFSMOUNT} 
+		fi	
+	else 
+		unmount_NFS ${NFSMOUNT} 	
+	fi
+
+}
+
+function do_Backup() {
     if [[ $TESTMODE -eq 0 ]]; then
 		if [[ $SAMINOR -ge 4 ]]; then 
 			service puppet stop 2>&1 | tee -a $LOG
+			service collectd stop 2>&1 | tee -a $LOG
+
 		fi
 		mkdir -p ${BACKUP}
-		for i in "${COMPONENT[@]}"
+        for i in "${SERVICE_BK_ORDER[@]}";
         do
-            $i
+            if [[ ${COMPONENT[$i]+_} ]]; then
+                ${COMPONENT[$i]}
+            fi
         done
 		if [[ $SAMINOR -ge 4 ]]; then 
+            service collectd start 2>&1 | tee -a $LOG
 			service puppet start 2>&1 | tee -a $LOG
 		fi  
 		writeLog "The backup saved in ${BACKUP}"
 	else
         # Test mode
-        writeLog "Test mode: Nothing will be backed up. Exiting."
+        echo -e ${COL_YELLOW}"Test mode: Nothing will be backed up. Exiting."${COL_RESET} 2>&1 | tee -a $LOG
+		
     fi
 }
 
 #########################
 # The command line help #
 #########################
-display_help() {
+function display_help() {
 
 echo "Usage: $0 [OPTION...]"
 echo "BACKUP TOOL for RSA Security Analytics 10.3 - 10.5 - version ${VER}"
@@ -846,7 +954,7 @@ echo
 
 }
 
-get_Args() {
+function get_Args() {
 	local i
     for i in "${ARGS[@]}"
         do
@@ -889,28 +997,36 @@ get_Args() {
                 exit 1
                 ;;
                 *)
-                        # unknown option
+				writeLog 'ERROR: "Unknown option'
+                display_help
+                exit 1
                 ;;
             esac
         done
 
 }
 
-main(){
+
+
+function main(){
     echo -e ${COL_BLUE}"BACKUP TOOL for RSA Security Analytics 10.3 - 10.5 - version ${VER}"${COL_RESET}
     get_Args
     writeLog "STARTING $HOST BACKUP"
     check_root
     check_isRun $SCRIPT_NAME
     check_SAVersion
+
+	check_Remote ${BACKUP_TYPE} 
+
     rotate_Logs 
     what_to_backup
 
     do_Backup
+
     #create_tarball
     #copy_RemoteSCP 
-
-    do_Cleanup
+	do_Remote
+    do_Cleanup 
 	
     writeLog "END $HOST BACKUP"
 }
