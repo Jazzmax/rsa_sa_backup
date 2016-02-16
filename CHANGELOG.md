@@ -6,7 +6,11 @@ All notable changes to this project will be documented in this file.
 - Disk space check
 - Version information file 
 
-### 1.0.11 - 2016-02-14
+### 1.0.12 - 2016-02-16
+**Fixed**
+* The backup path from a config file is not used to create a backup folder
+
+### 1.0.11 - 2016-02-14 
 **Added**
 * Added a remote backup to NFS
 + Added components backup ordering. Thanks to Lee McCotter

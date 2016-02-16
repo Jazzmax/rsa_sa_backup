@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.11
+VER=1.0.12
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
@@ -19,6 +19,7 @@ VER=1.0.11
 ##
 #######################################################################
 # # New in this version 
+# 1.0.12   * Fixed the backup folder creation
 # 1.0.11    + Remote backup to NFS 
 #           + Added components backup ordering. Thanks to Lee McCotter
 #           - Removed MCollective backup as redundant (fully puppet managed service)
@@ -110,7 +111,7 @@ HOST="$(hostname)"
 timestamp=$(date +%Y-%m-%d-%H-%M) 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 SCRIPT_NAME="$(basename "$(test -L "$0" && readlink "$0" || echo "$0")")"
-BACKUP="${BACKUPPATH}/${HOST}-${timestamp}"
+BACKUP=""
 SYSLOG_PRIORITY=local0.alert
 TARVERBOSE=""
 PID_FILE=sa_backup.pid
@@ -892,6 +893,7 @@ function do_Backup() {
 			service collectd stop 2>&1 | tee -a $LOG
 
 		fi
+		BACKUP="${BACKUPPATH}/${HOST}-${timestamp}"
 		mkdir -p ${BACKUP}
         for i in "${SERVICE_BK_ORDER[@]}";
         do
