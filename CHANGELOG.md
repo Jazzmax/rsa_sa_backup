@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 - Disk space check
 - Version information file 
 
+### 1.0.13 - 2016-06-15
+**Fixed**
+* Added ERLANG kill to RabbitMQ backup
+* Fixed SA version detection - excluded rsa-mcollective-agents
+
 ### 1.0.12 - 2016-02-16
 **Fixed**
 * The backup path from a config file is not used to create a backup folder

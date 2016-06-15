@@ -1,5 +1,5 @@
 #!/bin/bash
-VER=1.0.12
+VER=1.0.13
 #######################################################################
 ##
 ## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
@@ -19,12 +19,15 @@ VER=1.0.12
 ##
 #######################################################################
 # # New in this version 
-# 1.0.12   * Fixed the backup folder creation
+# 1.0.13    * Added ERLANG kill to RabbitMQ backup
+#           * Fixed SA version detection - excluded rsa-mcollective-agents
+# 1.0.12    * Fixed the backup folder creation
 # 1.0.11    + Remote backup to NFS 
 #           + Added components backup ordering. Thanks to Lee McCotter
 #           - Removed MCollective backup as redundant (fully puppet managed service)
 #           * Excluded feeds from Core appliance backup
 #           * Bug fixes and stability improvements
+#           * Fixed the backup folder creation
 # 1.0.10    * Excluded log files from ESA, SMS, IM backup 
 #           * Improved Puppet backup. Stopping the puppet master only on SA server. 
 # 1.0.9		* Fixed: MongoDB is not identified 
@@ -114,7 +117,7 @@ SCRIPT_NAME="$(basename "$(test -L "$0" && readlink "$0" || echo "$0")")"
 BACKUP=""
 SYSLOG_PRIORITY=local0.alert
 TARVERBOSE=""
-PID_FILE=sa_backup.pid
+PID_FILE=/var/run/sa_backup.pid
 
 # Colouring output
 COL_BLUE="\x1b[34;01m"
@@ -271,7 +274,7 @@ function rotate_Logs() {
 function check_SAVersion() {
     SA_APP_VER_TEMP=`mktemp`
     # Get the (apparent) installed SA version
-    SA_APP_TYPE_TEMP=$(rpm -qa --qf '%{NAME}\n' | grep -E '^(nw|jetty|rsa-[a-z,A-Z]*|rsa[m,M]|re-server)' | grep -Ev 'rsa-sa-gpg-pubkeys')
+    SA_APP_TYPE_TEMP=$(rpm -qa --qf '%{NAME}\n' | grep -E '^(nw|jetty|rsa-[a-z,A-Z]*|rsa[m,M]|re-server)' | grep -Ev 'rsa-sa-gpg-pubkeys|rsa-mcollective-agents')
     for SA_PKG_NAME in ${SA_APP_TYPE_TEMP} ; do
         rpm -q "${SA_PKG_NAME}" --qf '%{VERSION}\n' 2> /dev/null >> "${SA_APP_VER_TEMP}"
     done
@@ -698,6 +701,8 @@ function backup_RabbitMQ() {
     writeLog "==================================================================="
     writeLog "Backup of RabbitMQ DB: ${RABBITMQ}" 
     check_ServiceStatus rabbitmq-server init _RESTART || service rabbitmq-server stop 2>&1 && sleep 10 | tee -a $LOG    
+    sleep 3
+    /usr/lib64/erlang/erts-5.10.4/bin/epmd -kill 
 
     writeLog "tar -czvf ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ}" 
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ} 2>&1 | tee -a $LOG
