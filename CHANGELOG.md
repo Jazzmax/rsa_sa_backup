@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 - Disk space check
 - Version information file 
 
+### 1.0.15 - 2017-03-31
+**Added**
++ Added Incident Management remote database backup
+**Fixed**
+* Fixed backuponly option, minor fixes
+**Changed**
+* Let SA 10.6 backup 
+* check_SAVersion checks the sarelease file first
+
+### 1.0.14 - 2016-08-13
+**Fixed**
+* Removed an absolute path to Erlang epmd
+
 ### 1.0.13 - 2016-06-15
 **Fixed**
 * Added ERLANG kill to RabbitMQ backup

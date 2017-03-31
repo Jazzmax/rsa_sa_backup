@@ -5,7 +5,7 @@ RSA Securiy Analytics Configuration Backup tool
 Author : Maxim Siyazov 
 
 sa_backup is a tool to take a backup of configurations of all Security Analytics components available on the appliance 
-Tested with versions 10.3, 10.4, 10.5.   
+Tested with versions 10.3, 10.4, 10.5, 10.6   
 
 Because in 10.4 some configuration files such as rabbitmq, collectd, tokumx, and mcollective are managed by puppet so sa_backup does not save those files. 
 
@@ -34,7 +34,7 @@ The tool does NOT do:
   - Malware Analysis configuration
   - ESA server configuration
   - System Management Service (SMS) configuration
-  - Incident Management (IM) configuration
+  - Incident Management (IM) configuration and DB
   - Log Collector (configuration and statDB)
   - Warehouse Connector 
   - Custom user files
@@ -49,10 +49,11 @@ The tool does NOT do:
 * Inline or file configuration to enable/disable backup of components
 * Option to backup custom user files
 * Test mode
+* Remote backup to NFS
 
 
 TO DO:
-- Remote backup.
+- SCP remote backup.
 
 
 ### Usage
@@ -64,26 +65,27 @@ Please modify the configuration section in the script or use an external configu
 Examples:
   sa_backup --config=backup.conf --verbose
 
-  sa_backup --backuponly=core
+  sa_backup --backuponly=CORE
 
 Main operation mode:
 
 -c, --config=CONFIG_FILE      Use configuration file
 -b, --backuponly=COMPONENTS   Backup only specified components:
-                                  core - Core services
-                                  sys - OS configuration
-                                  puppet - puppet master/agent configuration
-                                  rabbitmq - rabbitmq configuration
-                                  mongo - MongoDB/tokumx dump
-                                  jetty - SA application server settings
-                                  re - Reporting Engine
-                                  malware - Malware Analysis configuration
-                                  esa - Event Stream Analysis configuration
-                                  im - Incidint Management configuration
-                                  sms - System Management System
-                                  lc - Log collector
-                                  whc - Warehouse connector
-                                  pgqsl - PostgreSQL database
+                                  CORE - Core services
+                                  SYS - OS configuration
+                                  PUPPET - puppet master/agent configuration
+                                  RABBITMQ - rabbitmq configuration
+                                  MONGO - MongoDB/tokumx dump
+                                  JETTY - SA application server settings
+                                  RE - Reporting Engine
+                                  MALWARE - Malware Analysis configuration
+                                  ESA - Event Stream Analysis configuration
+                                  IM - Incidint Management configuration
+                                  IMDB - Incidint Management DB
+                                  SMS - System Management System
+                                  LC - Log collector
+                                  WHC - Warehouse connector
+                                  PGQSL - PostgreSQL database
 -t, --test                    Test mode; no backup performed
 -v, --verbose                 tar verbose switch
 -?, -h, --help                Give this help list

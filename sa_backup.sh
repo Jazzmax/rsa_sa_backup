@@ -1,8 +1,8 @@
 #!/bin/bash
-VER=1.0.13
+VER=1.0.15
 #######################################################################
 ##
-## BACKUP TOOL for RSA Security Analytics 10.3 - 10.5
+## BACKUP TOOL for RSA Security Analytics 10.3 - 10.6
 ##
 ## The script compresses configuration files of all available SA components
 ## into the backup directory specified in BACKUPPATH.
@@ -19,7 +19,12 @@ VER=1.0.13
 ##
 #######################################################################
 # # New in this version 
-# 1.0.13    * Added ERLANG kill to RabbitMQ backup
+# 1.0.15    + Added Incident Management remote database backup
+#           * Fixed backuponly option, minor fixes
+#           * Let SA 10.6 backup 
+#           * check_SAVersion checks the sarelease file first
+# 1.0.14    * Removed an absolute path to Erlang epmd
+# 1.0.13    * Added ERLANG kill to the RabbitMQ backup
 #           * Fixed SA version detection - excluded rsa-mcollective-agents
 # 1.0.12    * Fixed the backup folder creation
 # 1.0.11    + Remote backup to NFS 
@@ -75,8 +80,13 @@ MALWARE_ENABLED=true
 # ESA 
 ESA_ENABLED=true
 
-# Incident Management
+# Incident Management 
 IM_ENABLED=true
+
+# Incident Management database 
+IMDB_ENABLED=true
+IM_MONGO_PASS="im"                      # Password for the MongoDB IM database . 
+                                        # Host, db name, and db user will be gathered from the SA IM configuration file
 
 # Log collector database
 LC_ENABLED=true
@@ -153,23 +163,24 @@ declare -A COMPONENT_MARKER=( \
 	[CORE]="/etc/netwitness/ng" [MONGODB]="/etc/init.d/tokumx" [SASERVER]="/var/lib/netwitness/uax" \
 	[RE]="/home/rsasoc/rsa/soc/reporting-engine" [MALWARE]="/var/lib/netwitness/rsamalware" \
 	[ESA]="/opt/rsa/esa" [IM]="/opt/rsa/im" [LC]="/var/netwitness/logcollector" \
-	[WHC]="/var/netwitness/warehouseconnector" [PGSQL]="/var/lib/pgsql" [SMS]="/opt/rsa/sms" )
+	[WHC]="/var/netwitness/warehouseconnector" [PGSQL]="/var/lib/pgsql" [SMS]="/opt/rsa/sms" \
+    [IMDB]="/opt/rsa/im/conf/mongoDbConfig.json" )
 # Backup function names 	
 declare -A COMPONENT_BK_FUNCT=( \
 	[SYS]="backup_etc" [CUSTOM]="backup_Custom" [PUPPET]="backup_Puppet" [RABBITMQ]="backup_RabbitMQ" \
 	[CORE]="backup_CoreAppliance" [MONGODB]="backup_Mongo" [SASERVER]="backup_Jetty" \
 	[RE]="backup_RE" [MALWARE]="backup_Malware" \
 	[ESA]="backup_ESA" [IM]="backup_IM" [LC]="backup_LC" \
-	[WHC]="backup_WHC" [PGSQL]="backup_PostgreSQL" [SMS]="backup_SMS")
+	[WHC]="backup_WHC" [PGSQL]="backup_PostgreSQL" [SMS]="backup_SMS" [IMDB]="backup_IM_DB")
 # Components descriptions 									
 declare -A COMPONENT_DESC=( \
 	[SYS]="OS configuration files" [CUSTOM]="Custom files" [PUPPET]="Puppet master/agent" [RABBITMQ]="RabbitMQ server" \
 	[CORE]="Core Appliance Services" [MONGODB]="MongoDB dump" [SASERVER]="SA web server" \
 	[RE]="Reporting Engine" [MALWARE]="Malware Analysis" \
-	[ESA]="Event Stream Analysis" [IM]="Incident Management server" [LC]="Log Collector database" \
-	[WHC]="Warehouse Connector database" [PGSQL]="PostgreSQL database" [SMS]="System Management Server")		
+	[ESA]="Event Stream Analysis" [IM]="Incident Management configuration" [LC]="Log Collector database" \
+	[WHC]="Warehouse Connector database" [PGSQL]="PostgreSQL database" [SMS]="System Management Server" [IMDB]="Incident Management database")
 # Backup order 
-declare -a SERVICE_BK_ORDER=( RABBITMQ RE SMS ESA IM MALWARE PGSQL LC SASERVER MONGODB WHC PUPPET CORE SYS CUSTOM )
+declare -a SERVICE_BK_ORDER=( RABBITMQ RE SMS ESA IM MALWARE PGSQL LC SASERVER MONGODB IMDB WHC PUPPET CORE SYS CUSTOM )
 
 CONFIGFILE=""
 
@@ -183,7 +194,7 @@ function syslogMessage()
 }
   
 ####################################################################
-# Write to a log file
+# Write to a log file and to stdout
 function writeLog()
 {
     echo "$(date '+%Y-%m-%d %H:%M:%S %z') | $$ | $1" >> $LOG 
@@ -272,18 +283,22 @@ function rotate_Logs() {
 # Check if the SA version is 10.3 or higher (based on Josh Newton's sa_diag)
 ####################################################################
 function check_SAVersion() {
-    SA_APP_VER_TEMP=`mktemp`
-    # Get the (apparent) installed SA version
-    SA_APP_TYPE_TEMP=$(rpm -qa --qf '%{NAME}\n' | grep -E '^(nw|jetty|rsa-[a-z,A-Z]*|rsa[m,M]|re-server)' | grep -Ev 'rsa-sa-gpg-pubkeys|rsa-mcollective-agents')
-    for SA_PKG_NAME in ${SA_APP_TYPE_TEMP} ; do
-        rpm -q "${SA_PKG_NAME}" --qf '%{VERSION}\n' 2> /dev/null >> "${SA_APP_VER_TEMP}"
-    done
+    if [ -f '/etc/yum/vars/sarelease' ]; then 
+        SA_RELEASE_VER=$(cat /etc/yum/vars/sarelease)
+    else 
+        SA_APP_VER_TEMP=`mktemp`
+        # Get the (apparent) installed SA version
+        SA_APP_TYPE_TEMP=$(rpm -qa --qf '%{NAME}\n' | grep -E '^(nw|jetty|rsa-[a-z,A-Z]*|rsa[m,M]|re-server)' | grep -Ev 'rsa-sa-gpg-pubkeys|rsa-mcollective-agents')
+        for SA_PKG_NAME in ${SA_APP_TYPE_TEMP} ; do
+            rpm -q "${SA_PKG_NAME}" --qf '%{VERSION}\n' 2> /dev/null >> "${SA_APP_VER_TEMP}"
+        done
 
-    SA_RELEASE_VER=$(cat ${SA_APP_VER_TEMP} | grep '^10\.' | sort -Vr | head -n 1)
-    rm -f "${SA_APP_VER_TEMP}"
-    # Sanity check to make sure version string looks like a version number
-    if [ -z "${SA_RELEASE_VER}" ] ; then
-       exitOnError 1 "Could not determine appliance type from installed packages. Is this a Security Analytics\nappliance? This tool does not function on NetWitness appliances.\nPlease examine your installed packages.\n"
+        SA_RELEASE_VER=$(cat ${SA_APP_VER_TEMP} | grep '^10\.' | sort -Vr | head -n 1)
+        rm -f "${SA_APP_VER_TEMP}"
+        # Sanity check to make sure version string looks like a version number
+        if [ -z "${SA_RELEASE_VER}" ] ; then
+           exitOnError 1 "Could not determine appliance type from installed packages. Is this a Security Analytics\nappliance? This tool does not function on NetWitness appliances.\nPlease examine your installed packages.\n"
+        fi
     fi
     OIFS=$IFS
     IFS='.'
@@ -294,9 +309,9 @@ function check_SAVersion() {
     BUILDTYPE=${SA_VER_ARRAY[2]}
     RELEASENUM=${SA_VER_ARRAY[3]}
     writeLog "Found RSA Security Analytics $SAMAJOR.$SAMINOR.$BUILDTYPE" 
-    if [[ $SAMAJOR != 10 || !( $SAMINOR =~ ^3|4|5$ ) ]]; then 
-        writeLog "SA Backup script can only work on SA version 10.3, 10.4 or 10.5" 
-        exitOnError 1 "SA Backup script can only work on SA version 10.3, 10.4 or 10.5"
+    if [[ $SAMAJOR != 10 || !( $SAMINOR =~ ^3|4|5|6$ ) ]]; then
+        writeLog "SA Backup script can only work on SA version 10.3 - 10.6"
+        exitOnError 1 "SA Backup script can only work on SA version 10.3 - 10.6"
     fi 
 }
 ####################################################################
@@ -325,7 +340,13 @@ function check_ServiceStatus() {
     eval $_RESULTVAR="'$__RESTART'"
     return $_RETURNVAL 
 }
-
+####################################################################
+# Check if array contains the element
+function containsElement () {
+  local e
+  for e in "${@:2}"; do [[ "$e" == "$1" ]] && return 0; done
+  return 1
+}
 ####################################################################
 # Determine components present on the box
 ####################################################################
@@ -355,9 +376,13 @@ function what_to_backup() {
     done
 
 
-	if [ -n "$BACKUPONLY" ]; then
-		COMPONENT=([$BACKUPONLY]="${COMPONENT_BK_FUNCT[$BACKUPONLY]}")
-		echo -e ${COL_YELLOW}"!!ATTENTION!! --backuponly option is enabled. Will backup the ${COMPONENT_DESC[$BACKUPONLY]} only. Other components will be ignored."${COL_RESET}	
+	if [ -n "$BACKUPONLY" ]; then 
+        if  $(containsElement "$BACKUPONLY" "${SERVICE_BK_ORDER[@]}") ; then 
+		      COMPONENT=([$BACKUPONLY]="${COMPONENT_BK_FUNCT[$BACKUPONLY]}")
+		      echo -e ${COL_YELLOW}"!!ATTENTION!! --backuponly option is enabled. Will backup the ${COMPONENT_DESC[$BACKUPONLY]} only. Other components will be ignored."${COL_RESET}	
+        else 
+            exitOnError 1 "ERROR: invalid component ${BACKUPONLY}."
+        fi
 	fi
 	
 } 
@@ -522,7 +547,7 @@ function backup_ESA() {
 function backup_IM() {
     local _RESTART
     writeLog "==================================================================="
-    writeLog "Backup of Incident Management: ${IM}"
+    writeLog "Backup of Incident Management configuration: ${IM}"
     check_ServiceStatus rsa-im init _RESTART || service rsa-im stop 2>&1 | tee -a $LOG  
 
     writeLog "tar -C / --atime-preserve --recursion -cphzf ${BACKUP}/$HOST-opt-rsa-im.$timestamp.tar.gz ${IM} --exclude=${IM}/log/* --exclude=${IM}/lib --exclude=${IM}/bin --exclude=${IM}/scripts --exclude=${IM}/db"
@@ -534,9 +559,41 @@ function backup_IM() {
         --exclude=${IM}/db  2>&1 | tee -a $LOG
         syslogOnError ${PIPESTATUS[0]} "SA backup failed to archive RSA IM files ${IM}."    
 
-        service rsa-im $_RESTART 2>&1 | tee -a $LOG     
+        service rsa-im $_RESTART 2>&1 | tee -a $LOG 
+
 } 
+####################################################################
+## Incident Management Database
+####################################################################
+function backup_IM_DB() {
+    local collections
+    local coll
+    writeLog "==================================================================="
+    writeLog "Backup of Incident Management database" 
+    [[ -z "${IM_MONGO_PASS}" || ${IMDB_ENABLED} = false ]] && writeLog "Skipping IMDB. IM_MONGO_PASS is not configured." && return 1
+    # Get the database from the SA IM configuration file
+    IM_MONGO_HOST=$(cat /opt/rsa/im/conf/mongoDbConfig.json | python -c "import sys, json; print json.load(sys.stdin)['dictionary']['entry'][1]['value']['string']")
+    IM_MONGO_DB=$(cat /opt/rsa/im/conf/mongoDbConfig.json | python -c "import sys, json; print json.load(sys.stdin)['dictionary']['entry'][2]['value']['string']")
+    IM_MONGO_USER=$(cat /opt/rsa/im/conf/mongoDbConfig.json | python -c "import sys, json; print json.load(sys.stdin)['dictionary']['entry'][3]['value']['string']")
  
+    writeLog "Getting collections list from IM database: ${IM_MONGO_HOST}:27017/${IM_MONGO_DB}"          
+    collections=$(echo "show collections" | mongo ${IM_MONGO_HOST}:27017/${IM_MONGO_DB} -u ${IM_MONGO_USER} -p ${IM_MONGO_PASS} --quiet | awk '{ print $1 }' | grep -vE "system.indexes|system.users")
+    
+    if [[ -z ${collections} ]]; then 
+        syslogMessage  1 "Could determine the IM database collections. Incident Management data will not be backed up"
+    else
+        mkdir -p ${BACKUP}/${IM_MONGO_HOST}-IMDB.$timestamp
+
+        for coll in $collections
+        do
+            writeLog "Exporting collection ${coll}"
+            mongodump --host ${IM_MONGO_HOST} --port 27017 --db ${IM_MONGO_DB} --collection $coll --username ${IM_MONGO_USER} --password ${IM_MONGO_PASS} -o - | gzip > ${BACKUP}/${IM_MONGO_HOST}-IMDB.$timestamp/im_$coll.bson.gz | tee -a $LOG 
+                syslogOnError ${PIPESTATUS[0]} "SA backup failed to export IM database"
+        done
+         
+    fi
+}
+
 ####################################################################
 ## RSA SMS 
 # RSASMS=/opt/rsa/sms
@@ -702,7 +759,7 @@ function backup_RabbitMQ() {
     writeLog "Backup of RabbitMQ DB: ${RABBITMQ}" 
     check_ServiceStatus rabbitmq-server init _RESTART || service rabbitmq-server stop 2>&1 && sleep 10 | tee -a $LOG    
     sleep 3
-    /usr/lib64/erlang/erts-5.10.4/bin/epmd -kill 
+    /usr/lib64/erlang/bin/epmd -kill 
 
     writeLog "tar -czvf ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ}" 
     tar -C / --atime-preserve --recursion --totals --checkpoint=. $TARVERBOSE -cphzf ${BACKUP}/$HOST-var-lib-rabbitmq.$timestamp.tar.gz ${RABBITMQ} 2>&1 | tee -a $LOG
@@ -764,7 +821,7 @@ function backup_Custom(){
 }
 
 # create a single tarball
-create_tarball(){
+function create_tarball(){
 	local _RPATH=$1
     local _RETURNVAL
     writeLog "==================================================================="
@@ -892,6 +949,8 @@ function do_Remote() {
 }
 
 function do_Backup() {
+
+   
     if [[ $TESTMODE -eq 0 ]]; then
 		if [[ $SAMINOR -ge 4 ]]; then 
 			service puppet stop 2>&1 | tee -a $LOG
@@ -900,6 +959,7 @@ function do_Backup() {
 		fi
 		BACKUP="${BACKUPPATH}/${HOST}-${timestamp}"
 		mkdir -p ${BACKUP}
+        writeLog "The backup will be saved in ${BACKUP}" 
         for i in "${SERVICE_BK_ORDER[@]}";
         do
             if [[ ${COMPONENT[$i]+_} ]]; then
@@ -910,7 +970,7 @@ function do_Backup() {
             service collectd start 2>&1 | tee -a $LOG
 			service puppet start 2>&1 | tee -a $LOG
 		fi  
-		writeLog "The backup saved in ${BACKUP}"
+		
 	else
         # Test mode
         echo -e ${COL_YELLOW}"Test mode: Nothing will be backed up. Exiting."${COL_RESET} 2>&1 | tee -a $LOG
@@ -924,7 +984,7 @@ function do_Backup() {
 function display_help() {
 
 echo "Usage: $0 [OPTION...]"
-echo "BACKUP TOOL for RSA Security Analytics 10.3 - 10.5 - version ${VER}"
+echo "BACKUP TOOL for RSA Security Analytics 10.3 - 10.6 - version ${VER}"
 echo "sa_backup takes a backup of configurations of Security Analytics components available on the appliance."
 echo
 echo "Please modify the configuration section in the script or use an external configuration file."
@@ -932,26 +992,28 @@ echo
 echo "Examples:"
 echo "  sa_backup --config=backup.conf --verbose "
 echo 
-echo "  sa_backup --backuponly=core "
+echo "  sa_backup --backuponly=CORE "
 echo 
 echo  "Main operation mode:"
 echo 
 echo  "-c, --config=CONFIG_FILE      config file"
 echo  "-b, --backuponly=COMPONENTS   backup only specified components: "
-echo  "                                  core - Core services"
-echo  "                                  sys - OS configuration"
-echo  "                                  puppet - puppet master/agent configuration"
-echo  "                                  rabbitmq - rabbitmq configuration"
-echo  "                                  mongo - MongoDB/tokumx dump"
-echo  "                                  jetty - SA application server settings"
-echo  "                                  re - Reporting Engine "
-echo  "                                  malware - Malware Analysis configuration"
-echo  "                                  esa - Event Stream Analysis configuration"
-echo  "                                  im - Incidint Management configuration"
-echo  "                                  sms - System Management System "
-echo  "                                  lc - Log collector "
-echo  "                                  whc - Warehouse connector" 
-echo  "                                  pgqsl - PostgreSQL database"
+echo  "                                  CORE - Core services"
+echo  "                                  SYS - OS configuration"
+echo  "                                  PUPPET - puppet master/agent configuration"
+echo  "                                  RABBITMQ - rabbitmq configuration"
+echo  "                                  MONGO - MongoDB/tokumx dump"
+echo  "                                  JETTY - SA application server settings"
+echo  "                                  RE - Reporting Engine "
+echo  "                                  MALWARE - Malware Analysis configuration"
+echo  "                                  ESA - Event Stream Analysis configuration"
+echo  "                                  IM - Incidint Management configuration"
+echo  "                                  IMDB - Incidint Management DB"
+echo  "                                  SMS - System Management System "
+echo  "                                  LC - Log collector "
+echo  "                                  WHC - Warehouse connector" 
+echo  "                                  PGQSL - PostgreSQL database"
+echo  "                                  CUSTOM - Custom files"
 #echo  "-q, --quite                   quite mode"
 #echo  "-i, --interactive             interactive mode"
 echo  "-t, --test                    test mode; no backup performed" 
@@ -1016,9 +1078,11 @@ function get_Args() {
 
 
 function main(){
-    echo -e ${COL_BLUE}"BACKUP TOOL for RSA Security Analytics 10.3 - 10.5 - version ${VER}"${COL_RESET}
+    echo -e ${COL_BLUE}"BACKUP TOOL version ${VER} for RSA Security Analytics 10.3 - 10.6"${COL_RESET}
     get_Args
     writeLog "STARTING $HOST BACKUP"
+    writeLog "Backup path: ${BACKUPPATH}" 
+
     check_root
     check_isRun $SCRIPT_NAME
     check_SAVersion
