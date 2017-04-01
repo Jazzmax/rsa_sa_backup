@@ -123,7 +123,7 @@ PUPPET_ENABLED=true
 
 This script must be run as "root" user. 
 
-**For more information see the [Wiki](https://github.com/Jazzmax/rsa_sa_backup/wiki/SA-Backup-Tool)**
+**For more information see the [Wiki](https://github.com/Jazzmax/rsa_sa_backup/wiki)**
 
 
 ### Contributing
