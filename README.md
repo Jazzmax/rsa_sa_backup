@@ -4,14 +4,17 @@ RSA Securiy Analytics Configuration Backup tool
 
 Author : Maxim Siyazov 
 
-sa_backup is a tool to take a backup of configurations of all Security Analytics components available on the appliance 
-Tested with versions 10.3, 10.4, 10.5, 10.6   
+sa_backup is a tool to take a backup of configurations  and some opertional data of all Security Analytics components of the appliance.
+Tested with versions 10.3, 10.4, 10.5, 10.6. 
 
-Because in 10.4 some configuration files such as rabbitmq, collectd, tokumx, and mcollective are managed by puppet so sa_backup does not save those files. 
+The SA_BACKUP tool is a bash 4 script and depends on packages that are part of the standard SA appliance image. No extra package is required. 
+
+Because in 10.4 and higher most of configuration files such as rabbitmq, collectd, tokumx, and mcollective are managed by puppet, so sa_backup does not save those files. 
 
 The tool does NOT do:
-- Backup of packet, meta, and session data. 
+- Backup of packets, meta, sessions or index data. 
 - Backup of a license server (fneserver).
+
 
 ### Features
 
@@ -34,7 +37,7 @@ The tool does NOT do:
   - Malware Analysis configuration
   - ESA server configuration
   - System Management Service (SMS) configuration
-  - Incident Management (IM) configuration and DB
+  - Incident Management (IM) configuration and DB (incidents, alerts, remediation tasks).
   - Log Collector (configuration and statDB)
   - Warehouse Connector 
   - Custom user files
@@ -91,27 +94,36 @@ Main operation mode:
 -?, -h, --help                Give this help list
 ```
 
+The script being executed without arguments will try to identify all available on the appliance components and according to the current inline configuration will take a backup. 
+Please note it will stop some of the SA services, which will lead to a short downtime. Use --test option to see the current configuration.
+
+
 Edit the configuration section in the script before running it.
 ```
+BACKUP_TYPE=local                       # local | nfs 
 BACKUPPATH=/root/sabackups              # Local backup directory
 LOG=sa_backup.log                       # The backup log file
 LOG_MAX_DIM=10000000                    # Max size of log file in bytes - 10MB 
-RETENTION_DAYS=1                        # Local backups retention in days (0 - no cleanup)
-										
+RETENTION_DAYS=0                        # Local backups retention in days (0 - no cleanup)
+          
 # System files 
 SYS_ENABLED=true
 
 # SA server / Jetty server
-SASERVER_ENABLED=false
+SASERVER_ENABLED=true
 
 # Reporting engine
-RE_ENABLED=false
-RE_FULLBACKUP=0                         # 0 - backup only RE configuration; 
+RE_ENABLED=true
+RE_FULLBACKUP=1                         # 0 - backup only RE configuration; 
                                         # 1 - full RE backup
+# Puppet 
+PUPPET_ENABLED=true
 . . .
 ```
 
 This script must be run as "root" user. 
+
+**For more information see the wiki**
 
 
 ### Contributing
